@@ -1,0 +1,33 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+streamlit*.log
+
+# Local extraction, rendering, and QA workspaces
+tmp_*/
+lo_*/
+qa_*/
+edge_profile_tmp*/
+*_pdf_check_*/
+*_render_*/
+*_check/
+_fusion_skill_prepare_test/
+batch_inspect/
+diagram_previews_v2/
+skill_patch_work/
+skill_staging/
+
+# Generated preview folders inside course output
+批量输出_知识背记课程/lo_direct_test/
+批量输出_知识背记课程/pdf_模板预览/
+批量输出_知识背记课程/render_*/
+
+# Intermediate documents and share bundles
+.streamlit/secrets.toml
+.git/
+__share_repo_git/
+__share_verify_*/
+tmp_repaired_*.docx
+*.bundle
