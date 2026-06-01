@@ -47,17 +47,18 @@ def _normalize_images(images: Any, field_name: str) -> list[dict[str, Any]]:
         renderable = bool(image.get("renderable") and data_uri)
         if renderable and not data_uri.startswith("data:image/"):
             raise PayloadValidationError(f"{field_name} 第 {index} 张图片数据格式不正确。")
-        normalized_image = {
-            "id": optional_text(image.get("id"), f"{field_name} 第 {index} 张图片 ID") or f"img{index:03d}",
-            "filename": filename,
-            "mime_type": mime_type,
-            "data_uri": data_uri,
-            "renderable": renderable,
-            "alt_text": optional_text(image.get("alt_text"), f"{field_name} 第 {index} 张图片说明"),
-            "width_px": image.get("width_px"),
-            "height_px": image.get("height_px"),
-        }
-        normalized.append(normalized_image)
+        normalized.append(
+            {
+                "id": optional_text(image.get("id"), f"{field_name} 第 {index} 张图片 ID") or f"img{index:03d}",
+                "filename": filename,
+                "mime_type": mime_type,
+                "data_uri": data_uri,
+                "renderable": renderable,
+                "alt_text": optional_text(image.get("alt_text"), f"{field_name} 第 {index} 张图片说明"),
+                "width_px": image.get("width_px"),
+                "height_px": image.get("height_px"),
+            }
+        )
     return normalized
 
 
@@ -76,6 +77,21 @@ def validate_distractor_list(answer: str, distractors: Any, field_name: str) -> 
     return cleaned
 
 
+def validate_blank_distractor_list(answer: str, distractors: Any, field_name: str) -> list[str]:
+    if not isinstance(distractors, list) or not distractors:
+        raise PayloadValidationError(f"{field_name} 必须至少包含 1 个干扰项。")
+    cleaned = [clean_text(item, field_name) for item in distractors]
+    keys = {answer.strip().casefold()}
+    for item in cleaned:
+        key = item.casefold()
+        if key in keys:
+            raise PayloadValidationError(f"{field_name} 的干扰项必须和答案互不相同。")
+        keys.add(key)
+    if len(keys) != len(cleaned) + 1:
+        raise PayloadValidationError(f"{field_name} 的干扰项必须互不重复。")
+    return cleaned
+
+
 def validate_finished_course_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise PayloadValidationError("课程数据必须是对象。")
@@ -91,11 +107,12 @@ def validate_finished_course_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise PayloadValidationError("knowledge_paragraphs 不能全部为空。")
     normalized["knowledge_text"] = "\n".join(normalized["knowledge_paragraphs"])
 
-    knowledge_images = _normalize_images(payload.get("knowledge_images", []), "知识配图")
+    raw_knowledge_images = payload.get("knowledge_images", [])
+    knowledge_images = _normalize_images(raw_knowledge_images, "知识配图")
     normalized_knowledge_images: list[dict[str, Any]] = []
     for index, image in enumerate(knowledge_images, start=1):
         try:
-            paragraph_index = int(payload.get("knowledge_images", [])[index - 1].get("paragraph_index"))
+            paragraph_index = int(raw_knowledge_images[index - 1].get("paragraph_index"))
         except (AttributeError, TypeError, ValueError) as exc:
             raise PayloadValidationError(f"知识配图第 {index} 张缺少有效段落位置。") from exc
         if paragraph_index < 0 or paragraph_index >= len(normalized["knowledge_paragraphs"]):
@@ -133,7 +150,7 @@ def validate_finished_course_payload(payload: dict[str, Any]) -> dict[str, Any]:
         distractors = blank.get("distractors", [])
         source = str(blank.get("distractor_source", "")).strip()
         if distractors:
-            distractors = validate_distractor_list(answer, distractors, f"第 {index} 个填空干扰项")
+            distractors = validate_blank_distractor_list(answer, distractors, f"第 {index} 个填空干扰项")
         normalized_blanks.append(
             {
                 "id": str(blank.get("id") or f"b{index:03d}"),

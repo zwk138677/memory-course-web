@@ -1,4 +1,4 @@
-"""DeepSeek generation for fill-in distractors only."""
+"""DeepSeek generation for word-bank fill-in distractors."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 from openai import OpenAI
 
 from .distractors import fallback_distractors_for_blank
-from .validation import PayloadValidationError, validate_distractor_list, validate_finished_course_payload
+from .validation import PayloadValidationError, clean_text, validate_finished_course_payload
 
 
 @dataclass(frozen=True)
@@ -23,14 +23,14 @@ class DeepSeekConfig:
 
 
 SYSTEM_PROMPT = """你是一名严谨的初中数学教研老师。你只输出合法 JSON，不输出 Markdown。
-任务：为知识填空答案生成选择题干扰项。
+任务：为知识填空的选词库生成干扰项。
 要求：
-1. 每个 id 必须返回 3 个 distractors。
-2. distractors 不能等于 answer，三项之间也不能重复。
-3. 干扰项应像学生常见误选，风格贴近初中数学教材。
-4. 不要改写 answer，不要生成题干，不要生成快速练习。
-5. 输出 JSON 格式：{"items":[{"id":"b001","distractors":["...","...","..."]}]}。
-"""
+1. 每个 id 必须返回且只返回 1 个 distractor。
+2. distractor 不能等于本空 answer，也不能等于其他空的正确答案。
+3. distractor 之间不能重复。
+4. 干扰项应像学生常见误选词，风格贴近初中数学教材。
+5. 不要改写 answer，不要生成题干，不要生成快速练习。
+输出格式：{"items":[{"id":"b001","distractor":"..."}]}。"""
 
 
 def _chunked(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
@@ -67,13 +67,43 @@ def _parse_json(content: str) -> dict[str, Any]:
     return parsed
 
 
+def _answer_keys(payload: dict[str, Any]) -> set[str]:
+    return {str(blank.get("answer", "")).strip().casefold() for blank in payload.get("blanks", [])}
+
+
+def _valid_single_distractor(value: Any, answer: str, answer_keys: set[str], used: set[str]) -> str | None:
+    try:
+        cleaned = clean_text(value, "填空干扰项")
+    except Exception:
+        return None
+    key = cleaned.casefold()
+    if key == answer.strip().casefold() or key in answer_keys or key in used:
+        return None
+    return cleaned
+
+
+def _fallback_candidate(blank: dict[str, Any], payload: dict[str, Any], answer_keys: set[str], used: set[str], index: int) -> str:
+    answer = str(blank["answer"])
+    for candidate in fallback_distractors_for_blank(blank, payload):
+        cleaned = _valid_single_distractor(candidate, answer, answer_keys, used)
+        if cleaned:
+            return cleaned
+    suffix = index
+    while True:
+        candidate = f"干扰项{suffix}"
+        cleaned = _valid_single_distractor(candidate, answer, answer_keys, used)
+        if cleaned:
+            return cleaned
+        suffix += 1
+
+
 def _generate_batch(
     *,
     payload: dict[str, Any],
     blanks: list[dict[str, Any]],
     client: OpenAI,
     config: DeepSeekConfig,
-) -> dict[str, list[str]]:
+) -> dict[str, str]:
     response = client.chat.completions.create(
         model=config.model,
         messages=[
@@ -93,16 +123,18 @@ def _generate_batch(
     if not isinstance(items, list):
         raise PayloadValidationError("DeepSeek 返回 JSON 缺少 items 数组。")
 
-    by_id = {blank["id"]: blank for blank in blanks}
-    result: dict[str, list[str]] = {}
+    blank_ids = {blank["id"] for blank in blanks}
+    result: dict[str, str] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
         item_id = str(item.get("id", ""))
-        if item_id not in by_id:
+        if item_id not in blank_ids:
             continue
-        answer = by_id[item_id]["answer"]
-        result[item_id] = validate_distractor_list(answer, item.get("distractors"), f"{item_id} 干扰项")
+        value = item.get("distractor")
+        if value is None and isinstance(item.get("distractors"), list) and item["distractors"]:
+            value = item["distractors"][0]
+        result[item_id] = str(value or "").strip()
 
     missing = [blank["id"] for blank in blanks if blank["id"] not in result]
     if missing:
@@ -110,9 +142,10 @@ def _generate_batch(
     return result
 
 
-def _apply_fallback_for_blank(payload: dict[str, Any], blank: dict[str, Any]) -> None:
-    blank["distractors"] = fallback_distractors_for_blank(blank, payload)
-    blank["distractor_source"] = "代码兜底"
+def _set_blank_distractor(blank: dict[str, Any], distractor: str, source: str, used: set[str]) -> None:
+    blank["distractors"] = [distractor]
+    blank["distractor_source"] = source
+    used.add(distractor.casefold())
 
 
 def generate_blank_distractors(
@@ -121,11 +154,7 @@ def generate_blank_distractors(
     *,
     batch_size: int = 20,
 ) -> dict[str, Any]:
-    """Attach distractors to parsed blanks.
-
-    DeepSeek is best-effort. Missing API keys, request failures, or validation
-    errors fall back to deterministic code-generated distractors.
-    """
+    """Attach one globally valid word-bank distractor to each parsed blank."""
 
     result = validate_finished_course_payload(deepcopy(payload))
     blanks = result.get("blanks", [])
@@ -133,31 +162,35 @@ def generate_blank_distractors(
         result["distractor_summary"] = {}
         return result
 
+    answer_keys = _answer_keys(result)
+    used_distractors: set[str] = set()
+
     if not config.api_key:
-        for blank in blanks:
-            _apply_fallback_for_blank(result, blank)
+        for index, blank in enumerate(blanks, start=1):
+            distractor = _fallback_candidate(blank, result, answer_keys, used_distractors, index)
+            _set_blank_distractor(blank, distractor, "代码兜底", used_distractors)
         result["distractor_summary"] = {"代码兜底": len(blanks)}
-        return result
+        return validate_finished_course_payload(result)
 
     client = OpenAI(api_key=config.api_key, base_url=config.base_url)
     for batch in _chunked(blanks, max(1, batch_size)):
         try:
             generated = _generate_batch(payload=result, blanks=batch, client=client, config=config)
         except Exception:
-            for blank in batch:
-                _apply_fallback_for_blank(result, blank)
-            continue
+            generated = {}
 
-        for blank in batch:
-            try:
-                blank["distractors"] = validate_distractor_list(
-                    blank["answer"],
-                    generated[blank["id"]],
-                    f"{blank['id']} 干扰项",
-                )
-                blank["distractor_source"] = "DeepSeek"
-            except Exception:
-                _apply_fallback_for_blank(result, blank)
+        for index, blank in enumerate(batch, start=1):
+            source = "DeepSeek"
+            distractor = _valid_single_distractor(
+                generated.get(blank["id"], ""),
+                str(blank["answer"]),
+                answer_keys,
+                used_distractors,
+            )
+            if not distractor:
+                distractor = _fallback_candidate(blank, result, answer_keys, used_distractors, len(used_distractors) + index)
+                source = "代码兜底"
+            _set_blank_distractor(blank, distractor, source, used_distractors)
 
     summary: dict[str, int] = {}
     for blank in blanks:
