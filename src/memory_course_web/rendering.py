@@ -10,6 +10,8 @@ from typing import Any
 
 from .distractors import is_placeholder_distractor, neutral_fallback_candidates
 
+BLANK_SLOT_PLACEHOLDER = "______"
+
 
 def stable_options(correct: str, wrong: list[str], salt: str) -> list[str]:
     options = [correct, *wrong]
@@ -122,8 +124,7 @@ def _apply_marks(paragraph: str, marks: list[dict[str, Any]], *, blank_current: 
         safe_parts.append(html.escape(paragraph[cursor:start]))
         answer = html.escape(paragraph[start:end])
         if blank_current:
-            blank_width = "_" * max(6, min(20, len(answer) * 2))
-            safe_parts.append(f'<span class="blank-slot">{blank_width}</span>')
+            safe_parts.append(f'<span class="blank-slot">{BLANK_SLOT_PLACEHOLDER}</span>')
         else:
             safe_parts.append(f'<span class="answer-mark">{answer}</span>')
         cursor = end
@@ -141,7 +142,6 @@ def _apply_blank_slots(paragraph: str, marks: list[dict[str, Any]], blank_number
             continue
         blank_id = str(mark.get("id", ""))
         blank_number = blank_numbers.get(blank_id, len(blank_numbers) + 1)
-        answer_len = max(6, min(24, (end - start) * 2))
         answer = html.escape(paragraph[start:end], quote=True)
         label = html.escape(f"第 {blank_number} 空", quote=True)
         safe_parts.append(html.escape(paragraph[cursor:start]))
@@ -150,7 +150,7 @@ def _apply_blank_slots(paragraph: str, marks: list[dict[str, Any]], blank_number
             f'data-blank-id="{html.escape(blank_id, quote=True)}" data-answer="{answer}" title="{label}">'
             f'<span class="word-blank-number">{blank_number}</span>'
             f'<span class="word-blank-answer"></span>'
-            f'<span class="word-blank-line">{"_" * answer_len}</span>'
+            f'<span class="word-blank-line">{BLANK_SLOT_PLACEHOLDER}</span>'
             f"</span>"
         )
         cursor = end
@@ -268,14 +268,13 @@ def _render_text_with_marks_and_inline_images(
         else:
             blank_id = str(mark.get("id", ""))
             blank_number = blank_numbers.get(blank_id, len(blank_numbers) + 1)
-            answer_len = max(6, min(24, (end - start) * 2))
             label = html.escape(f"第 {blank_number} 空", quote=True)
             safe_parts.append(
                 f'<span class="word-blank word-blank-drop" role="button" tabindex="0" '
                 f'data-blank-id="{html.escape(blank_id, quote=True)}" data-answer="{html.escape(paragraph[start:end], quote=True)}" title="{label}">'
                 f'<span class="word-blank-number">{blank_number}</span>'
                 f'<span class="word-blank-answer"></span>'
-                f'<span class="word-blank-line">{"_" * answer_len}</span>'
+                f'<span class="word-blank-line">{BLANK_SLOT_PLACEHOLDER}</span>'
                 f"</span>"
             )
         cursor = end
@@ -423,48 +422,50 @@ def fill_interaction_html(
   }}
   .fill-widget {{ padding: 0 1px 18px; }}
   .fill-sheet {{
-    border: 1px solid #ead7ad;
-    border-left: 5px solid #e3a72f;
+    border: 1px solid #e6c98f;
+    border-left: 6px solid #d5961e;
     border-radius: 8px;
-    padding: 1rem 1.05rem .9rem;
-    background: #fffdf7;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .85);
+    padding: 1.05rem 1.12rem .95rem;
+    background: linear-gradient(180deg, #fffdf8, #fff8ea);
+    box-shadow: 0 8px 18px rgba(111, 78, 32, .055), inset 0 1px 0 rgba(255, 255, 255, .88);
   }}
   .fill-sheet p {{
     font-size: 1rem;
-    line-height: 2.18;
+    line-height: 2.16;
     margin: 0 0 .85rem;
   }}
   .word-blank {{
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: .26rem;
-    min-width: 4.6rem;
+    width: 6.8rem;
     min-height: 1.65rem;
     margin: 0 .1rem;
     padding: 0 .35rem;
-    border: 1px solid #d9bc7d;
-    border-bottom: 2px solid #c77700;
+    border: 1px solid #d8b978;
+    border-bottom: 2px solid #b86f00;
     border-radius: 6px 6px 4px 4px;
     background: #fffaf0;
-    box-shadow: 0 1px 0 rgba(111, 78, 32, .05);
+    box-shadow: 0 1px 0 rgba(111, 78, 32, .05), inset 0 1px 0 rgba(255, 255, 255, .72);
     cursor: pointer;
     white-space: nowrap;
     transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
   }}
   .word-blank:hover {{
-    border-color: #c77700;
-    box-shadow: 0 0 0 3px rgba(227, 167, 47, .18);
+    border-color: #b86f00;
+    box-shadow: 0 0 0 3px rgba(213, 150, 30, .18);
   }}
-  .word-blank-number {{ color: #9a5b00; font-size: .76rem; font-weight: 800; vertical-align: super; }}
+  .word-blank-number {{ color: #835108; font-size: .76rem; font-weight: 800; vertical-align: super; }}
   .word-blank-answer {{ color: #2f261a; font-weight: 800; min-width: 1rem; }}
   .word-blank-line {{ color: transparent; letter-spacing: .04rem; }}
   .word-blank.filled .word-blank-line {{ display: none; }}
+  .word-blank.filled {{ width: auto; min-width: 6.8rem; }}
   .word-blank.correct {{ background: #e8f7ed; border-color: #49a36f; border-bottom-color: #278653; }}
-  .word-blank.wrong {{ background: #fff0ef; border-color: #d36b62; border-bottom-color: #c44747; }}
-  .word-blank.unfilled {{ background: #fff7df; border-color: #dba74c; border-bottom-color: #c3841f; }}
+  .word-blank.wrong {{ background: #fff0ef; border-color: #d36b62; border-bottom-color: #bd4a43; }}
+  .word-blank.unfilled {{ background: #fff6db; border-color: #dba74c; border-bottom-color: #b86f00; }}
   .word-bank-title {{
-    margin: 1.05rem 0 .55rem;
+    margin: 1.08rem 0 .58rem;
     color: #3a2a13;
     font-weight: 800;
   }}
@@ -472,11 +473,11 @@ def fill_interaction_html(
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));
     gap: .65rem .75rem;
-    padding: .9rem;
-    border: 1px solid #ead7ad;
+    padding: .95rem;
+    border: 1px solid #e6c98f;
     border-radius: 8px;
-    background: #fffdf7;
-    box-shadow: 0 8px 20px rgba(111, 78, 32, .06);
+    background: linear-gradient(180deg, #fffdf8, #fff8ea);
+    box-shadow: 0 8px 18px rgba(111, 78, 32, .055), inset 0 1px 0 rgba(255, 255, 255, .88);
   }}
   .word-bank-item {{
     display: flex;
@@ -484,7 +485,7 @@ def fill_interaction_html(
     gap: .5rem;
     min-height: 2.4rem;
     padding: .42rem .55rem;
-    border: 1px solid #ead7ad;
+    border: 1px solid #e2c486;
     border-radius: 7px;
     background: #fffaf0;
     color: #2f261a;
@@ -495,9 +496,10 @@ def fill_interaction_html(
   .word-bank-item:hover {{
     transform: translateY(-1px);
     border-color: #d49a2a;
-    box-shadow: 0 6px 14px rgba(111, 78, 32, .09);
+    background: #fff4d8;
+    box-shadow: 0 6px 14px rgba(111, 78, 32, .085);
   }}
-  .word-bank-item.selected {{ border-color: #c77700; background: #fff1c8; box-shadow: 0 0 0 3px rgba(227, 167, 47, .2); }}
+  .word-bank-item.selected {{ border-color: #b86f00; background: #fff0bf; box-shadow: 0 0 0 3px rgba(213, 150, 30, .18); }}
   .word-bank-item.used {{ opacity: .42; cursor: not-allowed; }}
   .word-bank-item.used:hover {{ transform: none; box-shadow: none; }}
   .word-bank-number {{
@@ -507,36 +509,36 @@ def fill_interaction_html(
     min-width: 1.55rem;
     height: 1.55rem;
     border-radius: 999px;
-    background: #fff1c8;
-    color: #9a5b00;
+    background: #fff0bf;
+    color: #835108;
     font-weight: 800;
     font-size: .82rem;
   }}
   .word-bank-text {{ line-height: 1.45; }}
   .fill-actions {{ display: flex; gap: .65rem; align-items: center; flex-wrap: wrap; margin-top: .95rem; }}
   .fill-actions button {{
-    border: 1px solid #e1c58b;
+    border: 1px solid #dfc286;
     border-radius: 7px;
     padding: .52rem .92rem;
-    background: #fffdf7;
+    background: #fffdf8;
     color: #2f261a;
     font-weight: 800;
     cursor: pointer;
   }}
-  .fill-actions .primary {{ background: #c77700; border-color: #c77700; color: #fff; }}
-  .fill-actions button:hover {{ border-color: #c77700; }}
+  .fill-actions .primary {{ background: #b86f00; border-color: #b86f00; color: #fff; }}
+  .fill-actions button:hover {{ border-color: #b86f00; }}
   .fill-result {{ font-weight: 800; color: #3a2a13; }}
-  .course-images {{ display: flex; flex-wrap: wrap; gap: .85rem; margin: .55rem 0 1.05rem; }}
+  .course-images {{ display: flex; flex-wrap: wrap; gap: .9rem; margin: .6rem 0 1.1rem; }}
   .course-image-wrap {{ margin: 0; }}
   .course-image {{
     display: block;
     max-height: 420px;
     object-fit: contain;
-    border: 1px solid #ead7ad;
+    border: 1px solid #e4c78b;
     border-radius: 8px;
-    background: #fffdf7;
-    padding: .45rem;
-    box-shadow: 0 8px 20px rgba(111, 78, 32, .08);
+    background: #fffdf8;
+    padding: .5rem;
+    box-shadow: 0 9px 20px rgba(111, 78, 32, .075);
   }}
   .course-image-placeholder {{
     border: 1px dashed #c8a76a;

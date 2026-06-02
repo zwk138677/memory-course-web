@@ -296,6 +296,20 @@ def test_fill_sheet_hides_all_answers_at_once():
     assert html.count("word-blank") >= 2
 
 
+def test_fill_sheet_uses_uniform_blank_placeholder_width():
+    html = fill_sheet_html(
+        ["A and verylonganswer"],
+        [
+            {"id": "b001", "answer": "A", "paragraph_index": 0, "start": 0, "end": 1},
+            {"id": "b002", "answer": "verylonganswer", "paragraph_index": 0, "start": 6, "end": 20},
+        ],
+    )
+
+    assert html.count('<span class="word-blank-line">______</span>') == 2
+    assert "____________" not in html
+    assert ">verylonganswer<" not in html
+
+
 def test_fill_interaction_html_contains_drag_click_and_check_controls():
     blanks = [{"id": "b001", "answer": "alpha", "paragraph_index": 0, "start": 0, "end": 5, "distractors": ["delta"]}]
     word_bank = build_word_bank(blanks, "interactive")

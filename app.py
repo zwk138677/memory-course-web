@@ -23,13 +23,13 @@ APP_CSS = """
 <style>
 .stApp {
   background:
-    linear-gradient(180deg, rgba(255, 247, 224, .92) 0%, rgba(255, 253, 247, .98) 48%, #fffaf0 100%),
-    repeating-linear-gradient(0deg, rgba(139, 92, 24, .035) 0, rgba(139, 92, 24, .035) 1px, transparent 1px, transparent 32px);
+    linear-gradient(180deg, #fff6df 0%, #fffdf8 44%, #fff7e6 100%),
+    repeating-linear-gradient(0deg, rgba(122, 82, 24, .032) 0, rgba(122, 82, 24, .032) 1px, transparent 1px, transparent 30px);
   color: #2f261a;
 }
 .main .block-container {
-  max-width: 980px;
-  padding-top: 1.6rem;
+  max-width: 1040px;
+  padding-top: 1.35rem;
   padding-bottom: 3.5rem;
 }
 h1, h2, h3 {
@@ -38,24 +38,25 @@ h1, h2, h3 {
 }
 .app-shell-title {
   margin: 0 0 .35rem;
-  font-size: 1.65rem;
+  font-size: 1.72rem;
   font-weight: 800;
   color: #3a2a13;
 }
 .app-shell-caption {
-  color: #7b674c;
+  color: #806a49;
   font-size: .96rem;
-  margin-bottom: 1.1rem;
+  margin-bottom: 1.15rem;
 }
 .course-ready-card,
 .learning-card {
   border: 1px solid #ead7ad;
   border-radius: 8px;
-  background: rgba(255, 253, 247, .97);
-  box-shadow: 0 12px 30px rgba(111, 78, 32, .09);
+  background:
+    linear-gradient(180deg, rgba(255, 253, 247, .98), rgba(255, 250, 239, .98));
+  box-shadow: 0 14px 32px rgba(111, 78, 32, .08), inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 .course-ready-card {
-  padding: 1rem 1.1rem;
+  padding: 1.08rem 1.18rem;
   margin: .85rem 0 1rem;
 }
 .course-ready-card h2 {
@@ -68,13 +69,14 @@ h1, h2, h3 {
   color: #7b674c;
 }
 .course-title-card {
-  padding: 1.05rem 1.2rem;
+  padding: 1.05rem 1.25rem;
   margin: .65rem 0 1rem;
   border: 1px solid #ead7ad;
-  border-left: 5px solid #e3a72f;
+  border-left: 6px solid #d5961e;
   border-radius: 8px;
-  background: #fffdf7;
-  box-shadow: 0 12px 30px rgba(111, 78, 32, .09);
+  background:
+    linear-gradient(180deg, #fffdf8, #fff8e8);
+  box-shadow: 0 14px 32px rgba(111, 78, 32, .09), inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 .course-title-card h1 {
   margin: 0;
@@ -90,8 +92,8 @@ h1, h2, h3 {
   display: inline-flex;
   align-items: center;
   gap: .4rem;
-  margin-bottom: .85rem;
-  color: #9a5b00;
+  margin-bottom: .9rem;
+  color: #87520a;
   font-size: .9rem;
   font-weight: 800;
 }
@@ -100,77 +102,79 @@ h1, h2, h3 {
   width: .45rem;
   height: .45rem;
   border-radius: 999px;
-  background: #f2bd45;
+  background: #d89a22;
 }
 .stTabs [data-baseweb="tab-list"] {
-  gap: .35rem;
-  border-bottom: 1px solid #ead7ad;
+  gap: .28rem;
+  border-bottom: 1px solid #e7d1a1;
 }
 .stTabs [data-baseweb="tab"] {
-  height: 2.65rem;
-  padding: .2rem .9rem;
+  height: 2.55rem;
+  padding: .18rem .9rem;
   border-radius: 8px 8px 0 0;
-  color: #7b674c;
+  color: #7b6544;
   font-weight: 700;
 }
 .stTabs [aria-selected="true"] {
-  background: #fffdf7;
-  color: #9a5b00;
+  background: #fffaf0;
+  color: #805005;
   border: 1px solid #ead7ad;
-  border-bottom-color: #fffdf7;
+  border-bottom-color: #fffaf0;
 }
 .stButton > button,
 .stDownloadButton > button,
 button[kind="primary"] {
   border-radius: 7px;
   font-weight: 700;
+  border-color: #dfc286;
 }
 .stButton > button[kind="primary"] {
-  background: #c77700;
-  border-color: #c77700;
+  background: #b86f00;
+  border-color: #b86f00;
 }
 .stButton > button[kind="primary"]:hover {
-  background: #a86200;
-  border-color: #a86200;
+  background: #965900;
+  border-color: #965900;
 }
 .stFileUploader section {
   border-radius: 8px;
-  border-color: #ead7ad;
+  border-color: #e6c98f;
   background: #fffaf0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .75);
 }
 .knowledge-body p {
   font-family: "Microsoft YaHei", "SimSun", sans-serif;
   font-size: 1rem;
-  line-height: 2.05;
-  margin: 0 0 .78rem;
+  line-height: 2.08;
+  margin: 0 0 .82rem;
   color: #2f261a;
 }
 .answer-mark {
-  border-bottom: 1.5px solid #c77700;
-  background: #fff0c2;
+  border-bottom: 1.5px solid #bd7615;
+  background: #fff0bf;
   color: #4a3514;
-  padding: 0 .16rem;
+  padding: 0 .18rem .02rem;
   border-radius: 3px 3px 0 0;
 }
 .course-images {
   display: flex;
   flex-wrap: wrap;
-  gap: .85rem;
-  margin: .55rem 0 1.05rem;
+  gap: .9rem;
+  margin: .6rem 0 1.1rem;
 }
 .course-image-wrap { margin: 0; }
 .course-image {
   display: block;
   max-height: 420px;
   object-fit: contain;
-  border: 1px solid #ead7ad;
+  border: 1px solid #e4c78b;
   border-radius: 8px;
-  background: #fffdf7;
-  padding: .45rem;
-  box-shadow: 0 8px 20px rgba(111, 78, 32, .08);
+  background: #fffdf8;
+  padding: .5rem;
+  box-shadow: 0 9px 20px rgba(111, 78, 32, .075);
 }
 .course-image-placeholder {
-  border: 1px dashed #c8a76a;
+  border: 1px dashed #c7a566;
   border-radius: 8px;
   background: #fffaf0;
   color: #735f43;
@@ -221,10 +225,10 @@ button[kind="primary"] {
   display: inline-flex;
   align-items: center;
   margin: 0 0 .8rem;
-  padding: .36rem .62rem;
+  padding: .38rem .68rem;
   border: 1px solid #efd9a4;
   border-radius: 999px;
-  background: #fff8dc;
+  background: #fff6d8;
   color: #835108;
   font-size: .88rem;
   font-weight: 700;
@@ -232,8 +236,8 @@ button[kind="primary"] {
 .practice-group-title {
   display: flex;
   align-items: center;
-  margin: 1rem 0 .65rem;
-  color: #9a5b00;
+  margin: 1.05rem 0 .68rem;
+  color: #835108;
   font-size: 1.05rem;
   font-weight: 800;
 }
@@ -243,7 +247,7 @@ button[kind="primary"] {
   height: 1.05rem;
   margin-right: .5rem;
   border-radius: 999px;
-  background: #f2bd45;
+  background: #d89a22;
 }
 .question-stem {
   display: flex;
@@ -263,33 +267,49 @@ button[kind="primary"] {
   height: 1.8rem;
   margin-top: .05rem;
   border-radius: 999px;
-  background: #fff1c8;
-  color: #9a5b00;
+  background: #fff0bf;
+  color: #835108;
   font-size: .9rem;
   font-weight: 800;
 }
 div[data-testid="stVerticalBlockBorderWrapper"] {
-  border-color: #ead7ad;
+  border-color: #e6c98f;
   border-radius: 8px;
-  background: rgba(255, 253, 247, .96);
-  box-shadow: 0 8px 20px rgba(111, 78, 32, .065);
+  background: rgba(255, 253, 248, .98);
+  box-shadow: 0 8px 18px rgba(111, 78, 32, .055), inset 0 1px 0 rgba(255, 255, 255, .88);
 }
-.practice-result-card {
-  padding: 1rem 1.1rem;
+div[role="radiogroup"] {
+  gap: .48rem;
+}
+div[role="radiogroup"] label {
+  margin-bottom: .42rem;
+  padding: .5rem .62rem;
   border: 1px solid #ead7ad;
   border-radius: 8px;
-  background: #fffdf7;
-  box-shadow: 0 10px 24px rgba(111, 78, 32, .08);
+  background: #fffaf0;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+div[role="radiogroup"] label:hover {
+  border-color: #d49a2a;
+  background: #fff4d8;
+  box-shadow: 0 4px 12px rgba(111, 78, 32, .06);
+}
+.practice-result-card {
+  padding: 1rem 1.12rem;
+  border: 1px solid #e4c78b;
+  border-radius: 8px;
+  background: #fffdf8;
+  box-shadow: 0 10px 22px rgba(111, 78, 32, .075);
 }
 .practice-result-card strong {
-  color: #9a5b00;
+  color: #835108;
 }
 .wrong-item {
   padding: .75rem .85rem;
   margin: .7rem 0 0;
-  border-left: 4px solid #c44747;
+  border-left: 4px solid #bd4a43;
   border-radius: 7px;
-  background: #fff7f7;
+  background: #fff5f3;
 }
 @media (max-width: 720px) {
   .main .block-container {
