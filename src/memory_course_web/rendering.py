@@ -8,6 +8,8 @@ import random
 import re
 from typing import Any
 
+from .distractors import is_placeholder_distractor, neutral_fallback_candidates
+
 
 def stable_options(correct: str, wrong: list[str], salt: str) -> list[str]:
     options = [correct, *wrong]
@@ -27,9 +29,13 @@ def _clean_option_text(value: Any) -> str:
 
 
 def _fallback_distractor_text(index: int, used: set[str], answer_keys: set[str]) -> str:
+    for candidate in neutral_fallback_candidates(index):
+        key = candidate.casefold()
+        if key not in used and key not in answer_keys:
+            return candidate
     suffix = index
     while True:
-        candidate = f"干扰项{suffix}"
+        candidate = f"相关概念{suffix}"
         key = candidate.casefold()
         if key not in used and key not in answer_keys:
             return candidate
@@ -64,7 +70,7 @@ def build_word_bank(blanks: list[dict[str, Any]], salt: str, *, distractor_ratio
         for candidate in blank.get("distractors", []):
             cleaned = _clean_option_text(candidate)
             key = cleaned.casefold()
-            if cleaned and key not in answer_keys and key not in used_distractor_keys:
+            if cleaned and not is_placeholder_distractor(cleaned) and key not in answer_keys and key not in used_distractor_keys:
                 distractor = cleaned
                 break
         if not distractor:

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from difflib import SequenceMatcher
+import re
 from typing import Any
 
 from .validation import validate_distractor_list
+
+PLACEHOLDER_DISTRACTOR_RE = re.compile(r"^\s*(?:干扰项|\?{2,}|�{2,})\s*\d+\s*$")
 
 
 GENERIC_DISTRACTORS = [
@@ -29,6 +32,56 @@ GENERIC_DISTRACTORS = [
     "第四象限",
 ]
 
+NEUTRAL_FALLBACK_DISTRACTORS = [
+    "基本定义",
+    "核心性质",
+    "适用条件",
+    "主要结论",
+    "数量关系",
+    "位置关系",
+    "对应关系",
+    "度数关系",
+    "图形关系",
+    "相等关系",
+    "大小关系",
+    "和差关系",
+    "倍数关系",
+    "边角关系",
+    "表示方法",
+    "判定方法",
+    "分类标准",
+    "变化规律",
+    "取值范围",
+    "计算方法",
+    "公共元素",
+    "特殊情况",
+    "一般情况",
+    "必要条件",
+    "充分条件",
+    "已知条件",
+    "目标结论",
+    "几何关系",
+    "代数关系",
+    "基本图形",
+    "辅助结论",
+    "常见性质",
+    "易混概念",
+    "相关概念",
+    "对应元素",
+    "单位关系",
+]
+
+
+def is_placeholder_distractor(value: str) -> bool:
+    return bool(PLACEHOLDER_DISTRACTOR_RE.match(str(value)))
+
+
+def neutral_fallback_candidates(start_index: int = 1) -> list[str]:
+    if not NEUTRAL_FALLBACK_DISTRACTORS:
+        return []
+    start = max(0, start_index - 1) % len(NEUTRAL_FALLBACK_DISTRACTORS)
+    return NEUTRAL_FALLBACK_DISTRACTORS[start:] + NEUTRAL_FALLBACK_DISTRACTORS[:start]
+
 
 def _unique(values: list[str], answer: str) -> list[str]:
     seen = {answer.strip().casefold()}
@@ -36,6 +89,8 @@ def _unique(values: list[str], answer: str) -> list[str]:
     for value in values:
         cleaned = " ".join(str(value).split()).strip()
         if not cleaned:
+            continue
+        if is_placeholder_distractor(cleaned):
             continue
         key = cleaned.casefold()
         if key in seen:
@@ -75,12 +130,20 @@ def fallback_distractors_for_blank(blank: dict[str, Any], payload: dict[str, Any
         pool.extend(str(item) for item in question.get("wrong", []))
     pool.extend(_variants(answer))
     pool.extend(GENERIC_DISTRACTORS)
+    pool.extend(neutral_fallback_candidates())
 
     candidates = _unique(pool, answer)
     candidates.sort(key=lambda item: _candidate_score(answer, item), reverse=True)
     selected = candidates[:3]
-    while len(selected) < 3:
-        selected.append(f"干扰项{len(selected) + 1}")
+    selected_keys = {item.casefold() for item in selected}
+    for candidate in neutral_fallback_candidates():
+        cleaned = " ".join(candidate.split()).strip()
+        key = cleaned.casefold()
+        if key != answer.casefold() and key not in selected_keys:
+            selected.append(cleaned)
+            selected_keys.add(key)
+        if len(selected) >= 3:
+            break
     return validate_distractor_list(answer, selected[:3], "代码兜底干扰项")
 
 

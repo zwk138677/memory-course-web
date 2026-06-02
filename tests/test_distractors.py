@@ -36,6 +36,25 @@ def test_code_fallback_generates_three_distinct_distractors():
 
     assert len(distractors) == 3
     assert len(set(distractors + [payload["blanks"][0]["answer"]])) == 4
+    assert not any(item.startswith("干扰项") for item in distractors)
+
+
+def test_code_fallback_does_not_expose_placeholder_when_pool_is_sparse():
+    payload = validate_finished_course_payload(
+        {
+            "title": "empty",
+            "knowledge_paragraphs": ["A"],
+            "blanks": [
+                {"id": "b001", "answer": "A", "paragraph_index": 0, "start": 0, "end": 1, "distractors": [], "distractor_source": ""}
+            ],
+            "quick_practice": [{"category": "基础辨析", "stem": "A 是什么？", "correct": "A", "wrong": ["B", "C", "D"]}],
+        }
+    )
+
+    distractors = fallback_distractors_for_blank(payload["blanks"][0], payload)
+
+    assert len(distractors) == 3
+    assert not any(item.startswith("干扰项") for item in distractors)
 
 
 def test_no_api_key_uses_one_code_fallback_for_each_blank():
@@ -47,6 +66,28 @@ def test_no_api_key_uses_one_code_fallback_for_each_blank():
     distractor_keys = {blank["distractors"][0].casefold() for blank in payload["blanks"]}
     assert not answer_keys & distractor_keys
     assert len(distractor_keys) == len(payload["blanks"])
+    assert not any(item.startswith("干扰项") for item in distractor_keys)
+
+
+def test_word_bank_replaces_existing_placeholder_distractor():
+    blanks = [
+        {
+            "id": "b001",
+            "answer": "圆心角",
+            "paragraph_index": 0,
+            "start": 0,
+            "end": 3,
+            "distractors": ["干扰项23"],
+            "distractor_source": "代码兜底",
+        }
+    ]
+
+    word_bank = build_word_bank(blanks, "placeholder")
+    distractors = [item["text"] for item in word_bank if not item["is_answer"]]
+
+    assert len(distractors) == 1
+    assert distractors[0] != "干扰项23"
+    assert not distractors[0].startswith("干扰项")
 
 
 def test_rendering_uses_character_positions_for_repeated_answers():

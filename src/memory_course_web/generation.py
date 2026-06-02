@@ -9,7 +9,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from .distractors import fallback_distractors_for_blank
+from .distractors import fallback_distractors_for_blank, is_placeholder_distractor, neutral_fallback_candidates
 from .validation import PayloadValidationError, clean_text, validate_finished_course_payload
 
 
@@ -77,6 +77,8 @@ def _valid_single_distractor(value: Any, answer: str, answer_keys: set[str], use
     except Exception:
         return None
     key = cleaned.casefold()
+    if is_placeholder_distractor(cleaned):
+        return None
     if key == answer.strip().casefold() or key in answer_keys or key in used:
         return None
     return cleaned
@@ -88,9 +90,13 @@ def _fallback_candidate(blank: dict[str, Any], payload: dict[str, Any], answer_k
         cleaned = _valid_single_distractor(candidate, answer, answer_keys, used)
         if cleaned:
             return cleaned
+    for candidate in neutral_fallback_candidates(index):
+        cleaned = _valid_single_distractor(candidate, answer, answer_keys, used)
+        if cleaned:
+            return cleaned
     suffix = index
     while True:
-        candidate = f"干扰项{suffix}"
+        candidate = f"相关概念{suffix}"
         cleaned = _valid_single_distractor(candidate, answer, answer_keys, used)
         if cleaned:
             return cleaned
