@@ -44,9 +44,11 @@ def _normalize_images(images: Any, field_name: str) -> list[dict[str, Any]]:
         filename = optional_text(image.get("filename"), f"{field_name} 第 {index} 张图片文件名")
         mime_type = optional_text(image.get("mime_type"), f"{field_name} 第 {index} 张图片格式")
         data_uri = optional_text(image.get("data_uri"), f"{field_name} 第 {index} 张图片数据")
-        renderable = bool(image.get("renderable") and data_uri)
+        formula_text = optional_text(image.get("formula_text"), f"{field_name} formula text")
+        renderable = bool((image.get("renderable") and data_uri) or formula_text)
         if renderable and not data_uri.startswith("data:image/"):
-            raise PayloadValidationError(f"{field_name} 第 {index} 张图片数据格式不正确。")
+            if not formula_text:
+                raise PayloadValidationError(f"{field_name} 第 {index} 张图片数据格式不正确。")
         normalized.append(
             {
                 "id": optional_text(image.get("id"), f"{field_name} 第 {index} 张图片 ID") or f"img{index:03d}",
@@ -57,6 +59,10 @@ def _normalize_images(images: Any, field_name: str) -> list[dict[str, Any]]:
                 "alt_text": optional_text(image.get("alt_text"), f"{field_name} 第 {index} 张图片说明"),
                 "width_px": image.get("width_px"),
                 "height_px": image.get("height_px"),
+                "inline": bool(image.get("inline")),
+                "char_index": image.get("char_index"),
+                "kind": optional_text(image.get("kind"), f"{field_name} image kind"),
+                "formula_text": formula_text,
             }
         )
     return normalized
@@ -117,6 +123,17 @@ def validate_finished_course_payload(payload: dict[str, Any]) -> dict[str, Any]:
             raise PayloadValidationError(f"知识配图第 {index} 张缺少有效段落位置。") from exc
         if paragraph_index < 0 or paragraph_index >= len(normalized["knowledge_paragraphs"]):
             raise PayloadValidationError(f"知识配图第 {index} 张段落位置越界。")
+        if image.get("inline"):
+            try:
+                char_index = int(image.get("char_index"))
+            except (TypeError, ValueError) as exc:
+                raise PayloadValidationError(f"知识配图第 {index} 张缺少有效行内位置。") from exc
+            paragraph = normalized["knowledge_paragraphs"][paragraph_index]
+            if char_index < 0 or char_index > len(paragraph):
+                raise PayloadValidationError(f"知识配图第 {index} 张行内位置越界。")
+            image["char_index"] = char_index
+        else:
+            image["char_index"] = None
         image["paragraph_index"] = paragraph_index
         normalized_knowledge_images.append(image)
     normalized["knowledge_images"] = normalized_knowledge_images

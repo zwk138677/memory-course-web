@@ -1,8 +1,9 @@
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 
-from src.memory_course_web.finished_course_parser import ParsedParagraph, _parse_questions, parse_finished_course
+from src.memory_course_web.finished_course_parser import ParsedParagraph, _paragraph_from_xml, _parse_questions, parse_finished_course
 from src.memory_course_web.validation import validate_finished_course_payload
 
 
@@ -68,6 +69,84 @@ def test_parse_split_question_heading_format():
     assert questions[0]["stem"] == "圆是下列哪一种图形？"
     assert questions[0]["correct"] == "中心对称图形"
     assert len(questions[0]["wrong"]) == 3
+
+
+def test_parse_mathtype_preview_as_inline_formula():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+             xmlns:v="urn:schemas-microsoft-com:vml"
+             xmlns:o="urn:schemas-microsoft-com:office:office">
+          <w:r><w:t>a=</w:t></w:r>
+          <w:r>
+            <w:object>
+              <v:shape><v:imagedata r:id="rId1" /></v:shape>
+              <o:OLEObject r:id="rId2" />
+            </w:object>
+          </w:r>
+          <w:r><w:t>)</w:t></w:r>
+        </w:p>
+        """
+    )
+    media_lookup = {
+        "rId1": {
+            "id": "rId1",
+            "filename": "formula.png",
+            "mime_type": "image/png",
+            "data_uri": "data:image/png;base64,AA==",
+            "renderable": True,
+            "width_px": 45,
+            "height_px": 27,
+        }
+    }
+
+    parsed = _paragraph_from_xml(paragraph, media_lookup)
+
+    assert parsed.text == "a=)"
+    assert len(parsed.images) == 1
+    assert parsed.images[0].inline is True
+    assert parsed.images[0].char_index == 2
+    assert parsed.images[0].kind == "formula"
+
+
+def test_parse_mathtype_formula_prefers_readable_text():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+             xmlns:v="urn:schemas-microsoft-com:vml"
+             xmlns:o="urn:schemas-microsoft-com:office:office">
+          <w:r><w:t>圆周角定理：一条弧所对的圆周角等于它所对的圆心角的一半.（即：圆周角=</w:t></w:r>
+          <w:r>
+            <w:object>
+              <v:shape><v:imagedata r:id="rId1" /></v:shape>
+              <o:OLEObject r:id="rId2" />
+            </w:object>
+          </w:r>
+          <w:r><w:t>）</w:t></w:r>
+        </w:p>
+        """
+    )
+    media_lookup = {
+        "rId1": {
+            "id": "rId1",
+            "filename": "formula.png",
+            "mime_type": "image/png",
+            "data_uri": "data:image/png;base64,AA==",
+            "renderable": True,
+            "width_px": 45,
+            "height_px": 27,
+        }
+    }
+
+    parsed = _paragraph_from_xml(paragraph, media_lookup, {"rId2": "1/2"})
+
+    assert parsed.text.endswith("圆周角=）")
+    assert len(parsed.images) == 1
+    assert parsed.images[0].kind == "formula_text"
+    assert parsed.images[0].formula_text == "1/2圆心角"
+    assert parsed.images[0].data_uri == ""
 
 
 def test_parse_images_from_finished_course_sample_when_available():

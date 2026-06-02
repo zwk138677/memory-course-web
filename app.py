@@ -181,6 +181,42 @@ button[kind="primary"] {
   color: #8a7657;
   font-size: .84rem;
 }
+.inline-formula {
+  display: inline-block;
+  height: 1.45em;
+  max-width: 10em;
+  margin: 0 .08rem;
+  vertical-align: -0.35em;
+  object-fit: contain;
+}
+.inline-formula-text {
+  display: inline;
+  margin: 0 .08rem;
+  font-family: "Times New Roman", "Cambria Math", serif;
+  font-size: 1em;
+  color: #3f2a0b;
+  white-space: nowrap;
+}
+.inline-formula-frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0 .08em;
+  vertical-align: middle;
+  transform: translateY(-0.06em);
+  line-height: .95;
+  font-size: .82em;
+}
+.inline-formula-frac .frac-top {
+  display: block;
+  border-bottom: 1px solid currentColor;
+  padding: 0 .16em .035em;
+}
+.inline-formula-frac .frac-bottom {
+  display: block;
+  padding: .035em .16em 0;
+}
 .source-note {
   display: inline-flex;
   align-items: center;

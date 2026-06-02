@@ -81,6 +81,130 @@ def test_rendering_keeps_paragraph_images():
     )
 
 
+def test_rendering_inserts_inline_formula_without_placeholder():
+    html = knowledge_html(
+        ["a=)"],
+        [],
+        [
+            {
+                "paragraph_index": 0,
+                "filename": "formula.png",
+                "mime_type": "image/png",
+                "data_uri": "data:image/png;base64,AA==",
+                "renderable": True,
+                "inline": True,
+                "char_index": 2,
+                "kind": "formula",
+            }
+        ],
+    )
+
+    assert 'class="inline-formula"' in html
+    assert "course-image-placeholder" not in html
+    assert "a=<img" in html
+
+
+def test_rendering_inserts_inline_formula_text_without_image():
+    html = knowledge_html(
+        ["圆周角=）"],
+        [],
+        [
+            {
+                "paragraph_index": 0,
+                "filename": "",
+                "mime_type": "text/plain",
+                "data_uri": "",
+                "renderable": True,
+                "inline": True,
+                "char_index": 4,
+                "kind": "formula_text",
+                "formula_text": "1/2圆心角",
+            }
+        ],
+    )
+
+    assert 'class="inline-formula-text"' in html
+    assert 'class="inline-formula-frac"' in html
+    assert "vertical-align:middle" in html
+    assert "translateY(-0.06em)" in html
+    assert "vertical-align:-0.28em" not in html
+    assert 'class="frac-top"' in html
+    assert ">1</span>" in html
+    assert 'class="frac-bottom"' in html
+    assert ">2</span>" in html
+    assert "圆心角" in html
+    assert 'class="inline-formula"' not in html
+    assert "course-image-placeholder" not in html
+
+
+def test_rendering_splits_literal_text_fraction():
+    html = knowledge_html(["圆周角=1/2圆心角"], [])
+
+    assert 'class="inline-formula-frac"' in html
+    assert 'class="frac-top"' in html
+    assert ">1</span>" in html
+    assert 'class="frac-bottom"' in html
+    assert ">2</span>" in html
+    assert "圆心角" in html
+    assert "1/2圆心角" not in html
+
+
+def test_rendering_keeps_non_fraction_formula_text_plain():
+    html = knowledge_html(
+        ["angle="],
+        [],
+        [
+            {
+                "paragraph_index": 0,
+                "filename": "",
+                "mime_type": "text/plain",
+                "data_uri": "",
+                "renderable": True,
+                "inline": True,
+                "char_index": 6,
+                "kind": "formula_text",
+                "formula_text": "90°",
+            }
+        ],
+    )
+
+    assert 'class="inline-formula-text"' in html
+    assert 'class="inline-formula-frac"' not in html
+    assert "90°" in html
+    assert 'class="inline-formula"' not in html
+
+
+def test_rendering_does_not_split_complex_fraction_text():
+    html = knowledge_html(
+        ["x="],
+        [],
+        [
+            {
+                "paragraph_index": 0,
+                "filename": "",
+                "mime_type": "text/plain",
+                "data_uri": "",
+                "renderable": True,
+                "inline": True,
+                "char_index": 2,
+                "kind": "formula_text",
+                "formula_text": "a/b/c",
+            }
+        ],
+    )
+
+    assert 'class="inline-formula-text"' in html
+    assert 'class="inline-formula-frac"' not in html
+    assert "a/b/c" in html
+
+
+def test_rendering_does_not_split_complex_literal_fraction_text():
+    html = knowledge_html(["x=a/b/c"], [])
+
+    assert 'class="inline-formula-frac"' not in html
+    assert "a/b/c" in html
+
+
 def test_word_bank_uses_one_to_one_distractor_ratio():
     blanks = [
         {"id": "b001", "answer": "alpha", "distractors": ["delta"]},

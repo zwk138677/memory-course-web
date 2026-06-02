@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from io import BytesIO
 import mimetypes
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
+import struct
 from typing import Any
 from xml.etree import ElementTree as ET
 from zipfile import ZipFile
@@ -19,6 +21,12 @@ R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 V_NS = "urn:schemas-microsoft-com:vml"
+O_NS = "urn:schemas-microsoft-com:office:office"
+
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover - optional runtime support
+    Image = None  # type: ignore[assignment]
 
 BROWSER_IMAGE_MIME_TYPES = {
     "image/png",
@@ -48,6 +56,10 @@ def q_wp(name: str) -> str:
 
 def q_v(name: str) -> str:
     return f"{{{V_NS}}}{name}"
+
+
+def q_o(name: str) -> str:
+    return f"{{{O_NS}}}{name}"
 
 
 FIRST_PART_MARKERS = ("第一部分：《知识小题》", "第一部分：《知识点》")
@@ -80,6 +92,10 @@ class ParagraphImage:
     alt_text: str = ""
     width_px: int | None = None
     height_px: int | None = None
+    inline: bool = False
+    char_index: int | None = None
+    kind: str = ""
+    formula_text: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -91,6 +107,10 @@ class ParagraphImage:
             "alt_text": self.alt_text,
             "width_px": self.width_px,
             "height_px": self.height_px,
+            "inline": self.inline,
+            "char_index": self.char_index,
+            "kind": self.kind,
+            "formula_text": self.formula_text,
         }
 
 
@@ -165,6 +185,221 @@ def _relationship_target_path(target: str) -> str:
     return str(PurePosixPath("word") / PurePosixPath(target))
 
 
+def _wmf_to_png_media(data: bytes) -> dict[str, Any] | None:
+    if Image is None:
+        return None
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+            output = BytesIO()
+            image.save(output, format="PNG")
+            encoded = base64.b64encode(output.getvalue()).decode("ascii")
+            return {
+                "mime_type": "image/png",
+                "data_uri": f"data:image/png;base64,{encoded}",
+                "width_px": int(image.width),
+                "height_px": int(image.height),
+            }
+    except Exception:
+        return None
+
+
+_CFB_END_OF_CHAIN = 0xFFFFFFFE
+_CFB_FREE_SECTOR = 0xFFFFFFFF
+
+
+def _u16(data: bytes, offset: int) -> int:
+    return struct.unpack_from("<H", data, offset)[0]
+
+
+def _u32(data: bytes, offset: int) -> int:
+    return struct.unpack_from("<I", data, offset)[0]
+
+
+def _u64(data: bytes, offset: int) -> int:
+    return struct.unpack_from("<Q", data, offset)[0]
+
+
+class _CompoundBinaryFile:
+    """Tiny CFB reader for MathType OLE streams embedded in DOCX."""
+
+    def __init__(self, data: bytes) -> None:
+        if len(data) < 512 or not data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+            raise ValueError("not a compound file")
+        self.data = data
+        self.sector_size = 1 << _u16(data, 0x1E)
+        self.mini_sector_size = 1 << _u16(data, 0x20)
+        self.first_directory_sector = _u32(data, 0x30)
+        self.mini_stream_cutoff = _u32(data, 0x38)
+        self.first_mini_fat_sector = _u32(data, 0x3C)
+        self.num_mini_fat_sectors = _u32(data, 0x40)
+        difat = [_u32(data, 0x4C + 4 * index) for index in range(109)]
+        self.difat = [sector for sector in difat if sector not in {_CFB_FREE_SECTOR, _CFB_END_OF_CHAIN}]
+        self.fat: list[int] = []
+        for sector in self.difat:
+            sector_data = self._sector(sector)
+            self.fat.extend(struct.unpack("<" + "I" * (len(sector_data) // 4), sector_data))
+
+        self.directory_entries = self._read_directory_entries()
+        root = next((entry for entry in self.directory_entries if entry["type"] == 5), None)
+        self.mini_stream = b""
+        if root and root["start"] not in {_CFB_FREE_SECTOR, _CFB_END_OF_CHAIN}:
+            self.mini_stream = self._read_sector_chain(root["start"])[: int(root["size"])]
+
+        self.mini_fat: list[int] = []
+        if self.first_mini_fat_sector not in {_CFB_FREE_SECTOR, _CFB_END_OF_CHAIN}:
+            mini_fat_data = self._read_sector_chain(
+                self.first_mini_fat_sector,
+                max_sectors=max(1, self.num_mini_fat_sectors),
+            )
+            self.mini_fat = list(
+                struct.unpack("<" + "I" * (len(mini_fat_data) // 4), mini_fat_data[: len(mini_fat_data) // 4 * 4])
+            )
+
+    def _sector(self, sector: int) -> bytes:
+        start = 512 + sector * self.sector_size
+        return self.data[start : start + self.sector_size]
+
+    def _read_sector_chain(self, start_sector: int, max_sectors: int = 10000) -> bytes:
+        chunks: list[bytes] = []
+        sector = start_sector
+        seen: set[int] = set()
+        while (
+            sector not in {_CFB_FREE_SECTOR, _CFB_END_OF_CHAIN}
+            and 0 <= sector < len(self.fat)
+            and sector not in seen
+            and len(seen) < max_sectors
+        ):
+            seen.add(sector)
+            chunks.append(self._sector(sector))
+            sector = self.fat[sector]
+        return b"".join(chunks)
+
+    def _read_mini_chain(self, start_sector: int, size: int) -> bytes:
+        chunks: list[bytes] = []
+        sector = start_sector
+        seen: set[int] = set()
+        while (
+            sector not in {_CFB_FREE_SECTOR, _CFB_END_OF_CHAIN}
+            and 0 <= sector < len(self.mini_fat)
+            and sector not in seen
+        ):
+            seen.add(sector)
+            start = sector * self.mini_sector_size
+            chunks.append(self.mini_stream[start : start + self.mini_sector_size])
+            sector = self.mini_fat[sector]
+        return b"".join(chunks)[:size]
+
+    def _read_directory_entries(self) -> list[dict[str, Any]]:
+        directory_data = self._read_sector_chain(self.first_directory_sector)
+        entries: list[dict[str, Any]] = []
+        for offset in range(0, len(directory_data), 128):
+            entry = directory_data[offset : offset + 128]
+            if len(entry) < 128:
+                continue
+            name_length = _u16(entry, 64)
+            name = entry[: max(0, name_length - 2)].decode("utf-16le", errors="ignore") if name_length >= 2 else ""
+            entries.append(
+                {
+                    "name": name,
+                    "type": entry[66],
+                    "start": _u32(entry, 116),
+                    "size": _u64(entry, 120),
+                }
+            )
+        return entries
+
+    def read_stream(self, name: str) -> bytes | None:
+        entry = next((item for item in self.directory_entries if item["type"] == 2 and item["name"] == name), None)
+        if not entry:
+            return None
+        size = int(entry["size"])
+        if size < self.mini_stream_cutoff:
+            return self._read_mini_chain(int(entry["start"]), size)
+        return self._read_sector_chain(int(entry["start"]))[:size]
+
+
+def _extract_mathtype_native_stream(ole_bytes: bytes) -> bytes | None:
+    try:
+        cfb = _CompoundBinaryFile(ole_bytes)
+        return cfb.read_stream("Equation Native")
+    except Exception:
+        return None
+
+
+def _mathtype_native_text(native_stream: bytes | None) -> str:
+    if not native_stream:
+        return ""
+    formula_region = native_stream[native_stream.find(b"DSMT7") :] if b"DSMT7" in native_stream else native_stream
+    tokens = [
+        match.group(1).decode("ascii", errors="ignore")
+        for match in re.finditer(rb"\x0f\x01\x02\x00\x88([ -~])", formula_region)
+    ]
+    if len(tokens) <= 1:
+        tokens = [
+            match.group(1).decode("ascii", errors="ignore")
+            for match in re.finditer(rb"\x88([0-9A-Za-z])", formula_region)
+        ]
+    tokens = [token for token in tokens if token and token not in {" "}]
+    if not tokens:
+        return ""
+    joined = "".join(tokens)
+    if tokens == ["1", "2"]:
+        return "1/2"
+    if joined == "90":
+        return "90°"
+    return joined
+
+
+def _load_ole_formula_lookup(package: ZipFile) -> dict[str, str]:
+    rels_path = "word/_rels/document.xml.rels"
+    if rels_path not in package.namelist():
+        return {}
+
+    relationships = ET.fromstring(package.read(rels_path))
+    package_names = set(package.namelist())
+    formulas: dict[str, str] = {}
+    for relationship in relationships:
+        rel_id = relationship.attrib.get("Id", "")
+        rel_type = relationship.attrib.get("Type", "")
+        target = relationship.attrib.get("Target", "")
+        target_mode = relationship.attrib.get("TargetMode", "")
+        if not rel_id or not rel_type.endswith("/oleObject") or not target or target_mode == "External":
+            continue
+        package_path = _relationship_target_path(target)
+        if package_path not in package_names:
+            continue
+        native_stream = _extract_mathtype_native_stream(package.read(package_path))
+        text = _mathtype_native_text(native_stream)
+        if text:
+            formulas[rel_id] = text
+    return formulas
+
+
+def _formula_text_from_context(native_text: str, prefix_text: str, suffix_text: str) -> str:
+    native_text = native_text.strip()
+    compact_prefix = re.sub(r"\s+", "", prefix_text)
+    compact_suffix = re.sub(r"\s+", "", suffix_text)
+    if native_text == "1/2":
+        term = ""
+        if "的一半" in compact_prefix:
+            before_half = compact_prefix.rsplit("的一半", 1)[0]
+            term = before_half.rsplit("所对的", 1)[-1]
+            term = re.sub(r"^[^\u4e00-\u9fffA-Za-z∠]+", "", term)
+        if term and not compact_suffix.startswith(term):
+            return f"1/2{term}"
+        return native_text
+    if native_text == "90" or native_text == "90°":
+        return "90°" if "直角" in compact_prefix or "直角" in compact_suffix else native_text
+    if native_text:
+        return native_text
+    if "圆心角的一半" in compact_prefix and compact_prefix.endswith("圆周角="):
+        return "1/2圆心角"
+    if "直角" in compact_prefix and compact_suffix.startswith("的圆周角"):
+        return "90°"
+    return ""
+
+
 def _load_media_lookup(package: ZipFile) -> dict[str, dict[str, Any]]:
     rels_path = "word/_rels/document.xml.rels"
     if rels_path not in package.namelist():
@@ -185,17 +420,32 @@ def _load_media_lookup(package: ZipFile) -> dict[str, dict[str, Any]]:
         mime_type = _mime_type_for_name(filename)
         renderable = mime_type in BROWSER_IMAGE_MIME_TYPES
         data_uri = ""
+        width_px = None
+        height_px = None
         if target_mode != "External":
             package_path = _relationship_target_path(target)
-            if package_path in package_names and renderable:
-                encoded = base64.b64encode(package.read(package_path)).decode("ascii")
-                data_uri = f"data:{mime_type};base64,{encoded}"
+            if package_path in package_names:
+                image_bytes = package.read(package_path)
+                if renderable:
+                    encoded = base64.b64encode(image_bytes).decode("ascii")
+                    data_uri = f"data:{mime_type};base64,{encoded}"
+                elif mime_type in {"image/wmf", "image/x-wmf"}:
+                    converted = _wmf_to_png_media(image_bytes)
+                    if converted:
+                        filename = f"{Path(filename).stem}.png"
+                        mime_type = str(converted["mime_type"])
+                        data_uri = str(converted["data_uri"])
+                        width_px = int(converted["width_px"])
+                        height_px = int(converted["height_px"])
+                        renderable = True
         media[rel_id] = {
             "id": rel_id,
             "filename": filename,
             "mime_type": mime_type,
             "data_uri": data_uri,
             "renderable": bool(renderable and data_uri),
+            "width_px": width_px,
+            "height_px": height_px,
         }
     return media
 
@@ -233,20 +483,47 @@ def _drawing_images(run: ET.Element, media_lookup: dict[str, dict[str, Any]]) ->
                     data_uri=str(media["data_uri"]),
                     renderable=bool(media["renderable"]),
                     alt_text=alt_text,
-                    width_px=width_px,
-                    height_px=height_px,
+                    width_px=width_px or media.get("width_px"),
+                    height_px=height_px or media.get("height_px"),
                 )
             )
     return images
 
 
-def _vml_images(run: ET.Element, media_lookup: dict[str, dict[str, Any]]) -> list[ParagraphImage]:
+def _run_has_ole_object(run: ET.Element) -> bool:
+    return any(True for _ in run.iter(q_w("object"))) or any(True for _ in run.iter(q_o("OLEObject")))
+
+
+def _ole_formula_text_from_run(
+    run: ET.Element,
+    ole_formula_lookup: dict[str, str],
+    prefix_text: str,
+    suffix_text: str,
+) -> tuple[str, str]:
+    for ole_object in run.iter(q_o("OLEObject")):
+        rel_id = ole_object.attrib.get(q_r("id")) or ole_object.attrib.get(q_r("link"))
+        native_text = ole_formula_lookup.get(rel_id or "", "")
+        formula_text = _formula_text_from_context(native_text, prefix_text, suffix_text)
+        if formula_text:
+            return formula_text, rel_id or ""
+    return _formula_text_from_context("", prefix_text, suffix_text), ""
+
+
+def _vml_images(
+    run: ET.Element,
+    media_lookup: dict[str, dict[str, Any]],
+    *,
+    inline_index: int | None = None,
+    hide_unrenderable: bool = False,
+) -> list[ParagraphImage]:
     images: list[ParagraphImage] = []
     for image_data in run.iter(q_v("imagedata")):
         rel_id = image_data.attrib.get(q_r("id")) or image_data.attrib.get(q_r("link"))
         if not rel_id or rel_id not in media_lookup:
             continue
         media = media_lookup[rel_id]
+        if hide_unrenderable and not media["renderable"]:
+            continue
         images.append(
             ParagraphImage(
                 id=str(media["id"]),
@@ -254,14 +531,54 @@ def _vml_images(run: ET.Element, media_lookup: dict[str, dict[str, Any]]) -> lis
                 mime_type=str(media["mime_type"]),
                 data_uri=str(media["data_uri"]),
                 renderable=bool(media["renderable"]),
-                alt_text=image_data.attrib.get("title", ""),
+                alt_text=image_data.attrib.get("title", "") or ("公式" if inline_index is not None else ""),
+                width_px=media.get("width_px"),
+                height_px=media.get("height_px"),
+                inline=inline_index is not None,
+                char_index=inline_index,
+                kind="formula" if inline_index is not None else "",
             )
         )
     return images
 
 
-def _images_from_run(run: ET.Element, media_lookup: dict[str, dict[str, Any]]) -> list[ParagraphImage]:
-    return [*_drawing_images(run, media_lookup), *_vml_images(run, media_lookup)]
+def _images_from_run(
+    run: ET.Element,
+    media_lookup: dict[str, dict[str, Any]],
+    ole_formula_lookup: dict[str, str],
+    char_index: int,
+    prefix_text: str,
+    suffix_text: str,
+) -> list[ParagraphImage]:
+    is_formula_object = _run_has_ole_object(run)
+    images = _drawing_images(run, media_lookup)
+    if is_formula_object:
+        formula_text, ole_rel_id = _ole_formula_text_from_run(run, ole_formula_lookup, prefix_text, suffix_text)
+        if formula_text:
+            images.append(
+                ParagraphImage(
+                    id=ole_rel_id or f"formula-{char_index}",
+                    filename="",
+                    mime_type="text/plain",
+                    data_uri="",
+                    renderable=True,
+                    alt_text="formula",
+                    inline=True,
+                    char_index=char_index,
+                    kind="formula_text",
+                    formula_text=formula_text,
+                )
+            )
+            return images
+    images.extend(
+        _vml_images(
+            run,
+            media_lookup,
+            inline_index=char_index if is_formula_object else None,
+            hide_unrenderable=is_formula_object,
+        )
+    )
+    return images
 
 
 def _trim_span(text: str, start: int, end: int) -> UnderlineSpan | None:
@@ -274,15 +591,24 @@ def _trim_span(text: str, start: int, end: int) -> UnderlineSpan | None:
     return UnderlineSpan(start=start, end=end, text=text[start:end])
 
 
-def _paragraph_from_xml(paragraph: ET.Element, media_lookup: dict[str, dict[str, Any]]) -> ParsedParagraph:
+def _paragraph_from_xml(
+    paragraph: ET.Element,
+    media_lookup: dict[str, dict[str, Any]],
+    ole_formula_lookup: dict[str, str] | None = None,
+) -> ParsedParagraph:
     text_parts: list[str] = []
     raw_spans: list[tuple[int, int]] = []
     images: list[ParagraphImage] = []
     cursor = 0
+    ole_formula_lookup = ole_formula_lookup or {}
+    runs = list(paragraph.iter(q_w("r")))
+    run_texts = [_text_from_run(run) for run in runs]
 
-    for run in paragraph.iter(q_w("r")):
-        images.extend(_images_from_run(run, media_lookup))
-        run_text = _text_from_run(run)
+    for run_index, run in enumerate(runs):
+        prefix_text = "".join(text_parts)
+        suffix_text = "".join(run_texts[run_index + 1 :])
+        images.extend(_images_from_run(run, media_lookup, ole_formula_lookup, cursor, prefix_text, suffix_text))
+        run_text = run_texts[run_index]
         if not run_text:
             continue
         start = cursor
@@ -320,10 +646,11 @@ def _paragraph_from_xml(paragraph: ET.Element, media_lookup: dict[str, dict[str,
 def _nonempty_paragraphs(docx_path: Path) -> list[ParsedParagraph]:
     with ZipFile(docx_path, "r") as package:
         media_lookup = _load_media_lookup(package)
+        ole_formula_lookup = _load_ole_formula_lookup(package)
         document = ET.fromstring(package.read("word/document.xml"))
     paragraphs: list[ParsedParagraph] = []
     for paragraph in document.iter(q_w("p")):
-        parsed = _paragraph_from_xml(paragraph, media_lookup)
+        parsed = _paragraph_from_xml(paragraph, media_lookup, ole_formula_lookup)
         if parsed.text or parsed.images:
             paragraphs.append(parsed)
     return paragraphs

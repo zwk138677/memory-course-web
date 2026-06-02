@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import random
+import re
 from typing import Any
 
 
@@ -152,6 +153,131 @@ def _apply_blank_slots(paragraph: str, marks: list[dict[str, Any]], blank_number
     return "".join(safe_parts)
 
 
+def _inline_image_html(image: dict[str, Any]) -> str:
+    formula_text = str(image.get("formula_text") or "").strip()
+    if formula_text:
+        return _inline_formula_text_html(formula_text)
+    if not image.get("renderable") or not image.get("data_uri"):
+        return ""
+    src = html.escape(str(image["data_uri"]), quote=True)
+    alt_text = html.escape(str(image.get("alt_text") or image.get("filename") or "公式"))
+    return f'<img class="inline-formula" src="{src}" alt="{alt_text}">'
+
+
+def _inline_formula_text_html(formula_text: str) -> str:
+    fraction_match = re.match(r"^([0-9A-Za-z]+)\s*/\s*([0-9A-Za-z]+)([^/]*)$", formula_text)
+    if fraction_match:
+        numerator, denominator, suffix = fraction_match.groups()
+        return (
+            '<span class="inline-formula-text">'
+            '<span class="inline-formula-frac" '
+            'style="display:inline-flex;flex-direction:column;align-items:center;justify-content:center;'
+            'margin:0 .08em;vertical-align:middle;transform:translateY(-0.06em);line-height:.95;font-size:.82em;">'
+            f'<span class="frac-top" style="display:block;border-bottom:1px solid currentColor;padding:0 .16em .035em;">{html.escape(numerator)}</span>'
+            f'<span class="frac-bottom" style="display:block;padding:.035em .16em 0;">{html.escape(denominator)}</span>'
+            "</span>"
+            f"{html.escape(suffix)}"
+            "</span>"
+        )
+    return f'<span class="inline-formula-text">{html.escape(formula_text)}</span>'
+
+
+_SIMPLE_TEXT_FRACTION_RE = re.compile(r"(?<![0-9A-Za-z/])([0-9A-Za-z]+)\s*/\s*([0-9A-Za-z]+)(?![0-9A-Za-z/])")
+
+
+def _plain_text_with_fractions_html(text: str) -> str:
+    parts: list[str] = []
+    cursor = 0
+    for match in _SIMPLE_TEXT_FRACTION_RE.finditer(text):
+        parts.append(html.escape(text[cursor : match.start()]))
+        numerator, denominator = match.groups()
+        parts.append(
+            '<span class="inline-formula-text">'
+            '<span class="inline-formula-frac" '
+            'style="display:inline-flex;flex-direction:column;align-items:center;justify-content:center;'
+            'margin:0 .08em;vertical-align:middle;transform:translateY(-0.06em);line-height:.95;font-size:.82em;">'
+            f'<span class="frac-top" style="display:block;border-bottom:1px solid currentColor;padding:0 .16em .035em;">{html.escape(numerator)}</span>'
+            f'<span class="frac-bottom" style="display:block;padding:.035em .16em 0;">{html.escape(denominator)}</span>'
+            "</span>"
+            "</span>"
+        )
+        cursor = match.end()
+    parts.append(html.escape(text[cursor:]))
+    return "".join(parts)
+
+
+def _inline_images_by_position(images: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    by_position: dict[int, list[dict[str, Any]]] = {}
+    for image in images:
+        if not image.get("inline"):
+            continue
+        try:
+            char_index = int(image.get("char_index"))
+        except (TypeError, ValueError):
+            continue
+        by_position.setdefault(char_index, []).append(image)
+    return by_position
+
+
+def _block_images(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [image for image in images if not image.get("inline")]
+
+
+def _render_text_with_marks_and_inline_images(
+    paragraph: str,
+    marks: list[dict[str, Any]],
+    inline_images: list[dict[str, Any]],
+    *,
+    blank_numbers: dict[str, int] | None = None,
+) -> str:
+    safe_parts: list[str] = []
+    inline_by_position = _inline_images_by_position(inline_images)
+    inline_positions = sorted(inline_by_position)
+
+    def append_inline_at(position: int) -> None:
+        for image in inline_by_position.get(position, []):
+            safe_parts.append(_inline_image_html(image))
+
+    def append_plain(start: int, end: int) -> None:
+        cursor = start
+        for position in inline_positions:
+            if position < start or position > end:
+                continue
+            if position < cursor:
+                continue
+            safe_parts.append(_plain_text_with_fractions_html(paragraph[cursor:position]))
+            append_inline_at(position)
+            cursor = position
+        safe_parts.append(_plain_text_with_fractions_html(paragraph[cursor:end]))
+
+    cursor = 0
+    used_until = -1
+    for start, end, mark in _spans_for_marks(paragraph, marks):
+        if start < used_until:
+            continue
+        append_plain(cursor, start)
+        answer = _plain_text_with_fractions_html(paragraph[start:end])
+        if blank_numbers is None:
+            safe_parts.append(f'<span class="answer-mark">{answer}</span>')
+        else:
+            blank_id = str(mark.get("id", ""))
+            blank_number = blank_numbers.get(blank_id, len(blank_numbers) + 1)
+            answer_len = max(6, min(24, (end - start) * 2))
+            label = html.escape(f"第 {blank_number} 空", quote=True)
+            safe_parts.append(
+                f'<span class="word-blank word-blank-drop" role="button" tabindex="0" '
+                f'data-blank-id="{html.escape(blank_id, quote=True)}" data-answer="{html.escape(paragraph[start:end], quote=True)}" title="{label}">'
+                f'<span class="word-blank-number">{blank_number}</span>'
+                f'<span class="word-blank-answer"></span>'
+                f'<span class="word-blank-line">{"_" * answer_len}</span>'
+                f"</span>"
+            )
+        cursor = end
+        used_until = end
+    append_plain(cursor, len(paragraph))
+    return "".join(safe_parts)
+
+
 def _image_width_style(image: dict[str, Any]) -> str:
     width = image.get("width_px")
     try:
@@ -164,6 +290,7 @@ def _image_width_style(image: dict[str, Any]) -> str:
 
 
 def image_group_html(images: list[dict[str, Any]]) -> str:
+    images = _block_images(images)
     if not images:
         return ""
 
@@ -209,8 +336,13 @@ def knowledge_html(
 
     rendered: list[str] = []
     for index, paragraph in enumerate(knowledge_paragraphs):
-        paragraph_html = _apply_marks(paragraph, by_paragraph.get(index, [])) if paragraph else ""
-        image_html = image_group_html(images_by_paragraph.get(index, []))
+        paragraph_images = images_by_paragraph.get(index, [])
+        paragraph_html = (
+            _render_text_with_marks_and_inline_images(paragraph, by_paragraph.get(index, []), paragraph_images)
+            if paragraph
+            else ""
+        )
+        image_html = image_group_html(paragraph_images)
         if paragraph_html:
             rendered.append(f"<p>{paragraph_html}</p>{image_html}")
         elif image_html:
@@ -229,8 +361,18 @@ def fill_sheet_html(
 
     rendered: list[str] = []
     for index, paragraph in enumerate(knowledge_paragraphs):
-        paragraph_html = _apply_blank_slots(paragraph, by_paragraph.get(index, []), blank_numbers) if paragraph else ""
-        image_html = image_group_html(images_by_paragraph.get(index, []))
+        paragraph_images = images_by_paragraph.get(index, [])
+        paragraph_html = (
+            _render_text_with_marks_and_inline_images(
+                paragraph,
+                by_paragraph.get(index, []),
+                paragraph_images,
+                blank_numbers=blank_numbers,
+            )
+            if paragraph
+            else ""
+        )
+        image_html = image_group_html(paragraph_images)
         if paragraph_html:
             rendered.append(f"<p>{paragraph_html}</p>{image_html}")
         elif image_html:
@@ -398,6 +540,42 @@ def fill_interaction_html(
     padding: .75rem .9rem;
     font-size: .92rem;
   }}
+  .inline-formula {{
+    display: inline-block;
+    height: 1.45em;
+    max-width: 10em;
+    margin: 0 .08rem;
+    vertical-align: -0.35em;
+    object-fit: contain;
+  }}
+  .inline-formula-text {{
+    display: inline;
+    margin: 0 .08rem;
+    font-family: "Times New Roman", "Cambria Math", serif;
+    font-size: 1em;
+    color: #3f2a0b;
+    white-space: nowrap;
+  }}
+  .inline-formula-frac {{
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    margin: 0 .08em;
+    vertical-align: middle;
+    transform: translateY(-0.06em);
+    line-height: .95;
+    font-size: .82em;
+  }}
+  .inline-formula-frac .frac-top {{
+    display: block;
+    border-bottom: 1px solid currentColor;
+    padding: 0 .16em .035em;
+  }}
+  .inline-formula-frac .frac-bottom {{
+    display: block;
+    padding: .035em .16em 0;
+  }}
   @media (max-width: 640px) {{
     .fill-sheet {{ padding: .85rem .75rem; }}
     .fill-sheet p {{ line-height: 2.05; }}
@@ -533,6 +711,11 @@ def blank_prompt_html(
 ) -> str:
     paragraph_index = int(blank["paragraph_index"])
     paragraph = knowledge_paragraphs[paragraph_index]
-    rendered = _apply_marks(paragraph, [blank], blank_current=True)
     paragraph_images = [image for image in images or [] if int(image.get("paragraph_index", -1)) == paragraph_index]
+    rendered = _render_text_with_marks_and_inline_images(
+        paragraph,
+        [blank],
+        paragraph_images,
+        blank_numbers={str(blank.get("id", "")): 1},
+    )
     return f'<div class="blank-prompt"><p>{rendered}</p>{image_group_html(paragraph_images)}</div>'
