@@ -451,6 +451,10 @@ def _parse_questions(paragraphs: list[ParsedParagraph], start_index: int) -> lis
         if paragraph_images:
             current.setdefault("images", []).extend(paragraph_images)
 
+        if not current.get("stem") and not text.startswith("【"):
+            current["stem"] = text
+            continue
+
         if text.startswith("【") and not text.startswith((CORRECT_LABEL, "【错误选项")):
             if current is not None and (current.get("stem") or current.get("correct") or current.get("wrong")):
                 questions.append(current)

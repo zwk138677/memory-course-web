@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.memory_course_web.finished_course_parser import parse_finished_course
+from src.memory_course_web.finished_course_parser import ParsedParagraph, _parse_questions, parse_finished_course
 from src.memory_course_web.validation import validate_finished_course_payload
 
 
@@ -48,6 +48,26 @@ def test_parse_questions_from_finished_course_sample_when_available():
     assert first_question["stem"]
     assert first_question["correct"]
     assert len(first_question["wrong"]) == 3
+
+
+def test_parse_split_question_heading_format():
+    paragraphs = [
+        ParsedParagraph("【基础辨析】"),
+        ParsedParagraph("【第一题】："),
+        ParsedParagraph("圆是下列哪一种图形？"),
+        ParsedParagraph("【正确选项】：中心对称图形"),
+        ParsedParagraph("【错误选项1】：轴对称但不是中心对称图形"),
+        ParsedParagraph("【错误选项2】：只能平移重合的图形"),
+        ParsedParagraph("【错误选项3】：没有对称性的图形"),
+    ]
+
+    questions = _parse_questions(paragraphs, 0)
+
+    assert len(questions) == 1
+    assert questions[0]["category"] == "基础辨析"
+    assert questions[0]["stem"] == "圆是下列哪一种图形？"
+    assert questions[0]["correct"] == "中心对称图形"
+    assert len(questions[0]["wrong"]) == 3
 
 
 def test_parse_images_from_finished_course_sample_when_available():
