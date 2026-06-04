@@ -374,6 +374,8 @@ def test_rendering_preserves_latex_delimiters_for_katex():
     assert "$1/2$" in html
     assert r"\(\sqrt{x}\)" in html
     assert html.count('class="inline-formula-frac"') == 1
+    assert "katex-inline-assets" in html
+    assert "renderMathInElement" in html
 
 
 def test_word_bank_visible_text_preserves_latex():
@@ -471,6 +473,7 @@ def test_fill_interaction_html_contains_drag_click_and_check_controls():
     assert "共 " not in html
     assert "word-bank-title" in html
     assert "fill-sheet" in html
+    assert "katex-inline-assets" in html
     assert ".word-blank.filled .word-blank-number" in html
     assert "gap: .82rem" in html
     assert html.index('id="goNextPage"') < html.index('id="resetAnswers"')
@@ -580,6 +583,7 @@ def test_practice_interaction_html_contains_latex_and_submit_payload():
 
     assert r"$\frac{1}{2}+x$" in html
     assert r"$x$" in html
+    assert "katex-inline-assets" in html
     assert "practice_submitted" in html
     assert "notifyPracticeSubmitted" in html
 

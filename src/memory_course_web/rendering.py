@@ -7,6 +7,8 @@ import html
 import json
 import random
 import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from .distractors import is_placeholder_distractor, neutral_fallback_candidates
@@ -15,6 +17,26 @@ BLANK_SLOT_PLACEHOLDER = "______"
 PAGE_STANDALONE_RE = re.compile(r"^\s*(?:第\s*)?([0-9]{1,2}|[一二三四五六七八九十]{1,3})(?:[.．、])?\s*$")
 PAGE_PREFIX_RE = re.compile(r"^\s*(?:第\s*)?([0-9]{1,2}|[一二三四五六七八九十]{1,3})[.．、]\s+\S")
 KNOWLEDGE_ITEM_PAGE_RE = re.compile(r"^\s*知识小题\s*(\d+)\s*[.．、]\s*\S")
+
+
+@lru_cache(maxsize=1)
+def _katex_inline_assets_html() -> str:
+    """Embed local KaTeX as a fallback when Streamlit static URLs are stale."""
+
+    katex_dir = Path(__file__).resolve().parents[2] / "static" / "katex"
+    try:
+        css = (katex_dir / "katex.min.css").read_text(encoding="utf-8")
+        katex_js = (katex_dir / "katex.min.js").read_text(encoding="utf-8")
+        auto_render_js = (katex_dir / "auto-render.min.js").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    katex_js = katex_js.replace("</script>", "<\\/script>")
+    auto_render_js = auto_render_js.replace("</script>", "<\\/script>")
+    return (
+        f'<style class="katex-inline-assets">{css}</style>'
+        f'<script class="katex-inline-assets">{katex_js}</script>'
+        f'<script class="katex-inline-assets">{auto_render_js}</script>'
+    )
 
 
 def stable_options(correct: str, wrong: list[str], salt: str) -> list[str]:
@@ -394,7 +416,7 @@ def knowledge_html(
             rendered.append(f"<p>{paragraph_html}</p>{image_html}")
         elif image_html:
             rendered.append(image_html)
-    return '<div class="knowledge-body">' + "\n".join(rendered) + "</div>"
+    return _katex_inline_assets_html() + '<div class="knowledge-body">' + "\n".join(rendered) + "</div>"
 
 
 def fill_sheet_html(
@@ -552,6 +574,7 @@ def practice_interaction_html(
     result_items: list[dict[str, Any]] | None = None,
     score: int = 0,
 ) -> str:
+    katex_assets = _katex_inline_assets_html()
     if result_items is not None:
         total = len(result_items)
         accuracy = round(score / total * 100) if total else 0
@@ -579,6 +602,7 @@ def practice_interaction_html(
                 "</article>"
             )
         return f"""
+{katex_assets}
 <style>
   body {{
     margin: 0;
@@ -657,7 +681,8 @@ def practice_interaction_html(
 """
 
     if not questions:
-        return """
+        return f"""
+{katex_assets}
 <style>
   body { margin: 0; font-family: "Microsoft YaHei", "SimSun", Arial, sans-serif; color: #2f261a; background: transparent; }
   .practice-empty { padding: .9rem 1rem; border: 1px solid #e4c78b; border-radius: 8px; background: #fffdf8; color: #735f43; }
@@ -708,6 +733,7 @@ def practice_interaction_html(
 
     question_json = _safe_script_json(question_payload)
     return f"""
+{katex_assets}
 <style>
   body {{
     margin: 0;
@@ -947,6 +973,7 @@ def fill_interaction_html(
         )
     nav = _page_nav_html(page_groups)
     return f"""
+{_katex_inline_assets_html()}
 <style>
   body {{
     margin: 0;

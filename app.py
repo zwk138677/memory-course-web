@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+from functools import lru_cache
 import hashlib
 import html
 import os
@@ -440,6 +442,22 @@ div[role="radiogroup"] label:hover {
 """
 
 
+@lru_cache(maxsize=1)
+def _logo_watermark_css() -> str:
+    logo_path = Path(__file__).parent / "static" / "shiguang-logo.png"
+    try:
+        encoded = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    return (
+        '<style>'
+        '.course-ready-card::after { '
+        f'background: url("data:image/png;base64,{encoded}") center / contain no-repeat; '
+        '}'
+        '</style>'
+    )
+
+
 def _secret_or_env(name: str, default: str = "") -> str:
     try:
         value = st.secrets.get(name, "")
@@ -797,6 +815,7 @@ def _render_course(payload: dict[str, Any]) -> None:
 
 def main() -> None:
     st.markdown(APP_CSS, unsafe_allow_html=True)
+    st.markdown(_logo_watermark_css(), unsafe_allow_html=True)
 
     active_payload = st.session_state.get("course_payload")
     if active_payload is not None and _payload_needs_reparse(active_payload):

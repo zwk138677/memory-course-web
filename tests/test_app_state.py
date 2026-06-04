@@ -127,6 +127,13 @@ def test_only_ready_course_card_uses_logo_watermark():
     assert 'url("/app/static/shiguang-logo.png") right 1.35rem bottom .75rem' not in app.APP_CSS
 
 
+def test_logo_watermark_css_embeds_image_data():
+    css = app._logo_watermark_css()
+
+    assert ".course-ready-card::after" in css
+    assert "data:image/png;base64," in css
+
+
 def test_course_sections_use_standard_streamlit_containers():
     import inspect
 
