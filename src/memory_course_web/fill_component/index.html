@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const Streamlit = {
+      setComponentReady() {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+          "*"
+        );
+      },
+      setFrameHeight(height) {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height },
+          "*"
+        );
+      },
+      setComponentValue(value) {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setComponentValue", value },
+          "*"
+        );
+      },
+    };
+
+    let lastHeight = 0;
+
+    function resizeToContent() {
+      const root = document.getElementById("root");
+      const height = Math.max(
+        120,
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+        root ? root.scrollHeight : 0
+      );
+      if (Math.abs(height - lastHeight) < 3) {
+        return;
+      }
+      lastHeight = height;
+      Streamlit.setFrameHeight(height);
+    }
+
+    function executeInlineScripts(container) {
+      const scripts = Array.from(container.querySelectorAll("script"));
+      scripts.forEach(oldScript => {
+        const newScript = document.createElement("script");
+        Array.from(oldScript.attributes).forEach(attr => {
+          newScript.setAttribute(attr.name, attr.value);
+        });
+        newScript.text = oldScript.textContent || "";
+        oldScript.replaceWith(newScript);
+      });
+    }
+
+    function collectFillState() {
+      if (window.__fillWidgetApi && typeof window.__fillWidgetApi.collectState === "function") {
+        return window.__fillWidgetApi.collectState();
+      }
+      const root = document.getElementById("root");
+      if (!root || !root.querySelector(".fill-widget")) {
+        return null;
+      }
+      const activePage = root.querySelector(".fill-page.active");
+      const blanks = Array.from(root.querySelectorAll(".word-blank-drop")).map(blank => ({
+        blankId: blank.dataset.blankId || "",
+        optionId: blank.dataset.optionId || "",
+        answerText: blank.querySelector(".word-blank-answer")?.textContent || "",
+        classes: Array.from(blank.classList).filter(name =>
+          ["filled", "correct", "wrong", "unfilled"].includes(name)
+        ),
+      }));
+      const buttons = {};
+      ["checkAnswers", "goNextPage", "enterPractice"].forEach(id => {
+        const button = document.getElementById(id);
+        if (button) {
+          buttons[id] = button.classList.contains("hidden");
+        }
+      });
+      return {
+        pageIndex: activePage ? Number(activePage.dataset.pageIndex || 0) : 0,
+        blanks,
+        buttons,
+        resultText: document.getElementById("fillResult")?.textContent || "",
+      };
+    }
+
+    function applyPageState(pageIndex) {
+      const root = document.getElementById("root");
+      const pages = Array.from(root.querySelectorAll(".fill-page"));
+      const banks = Array.from(root.querySelectorAll(".word-bank-page"));
+      const pageButtons = Array.from(root.querySelectorAll("[data-page-target]"));
+      const target = Math.max(0, Math.min(Number(pageIndex) || 0, Math.max(0, pages.length - 1)));
+      pages.forEach((page, index) => page.classList.toggle("active", index === target));
+      banks.forEach((bank, index) => bank.classList.toggle("active", index === target));
+      pageButtons.forEach(button => {
+        const active = Number(button.dataset.pageTarget) === target;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-current", active ? "page" : "false");
+      });
+    }
+
+    function restoreFillState(state) {
+      if (!state) {
+        return;
+      }
+      const root = document.getElementById("root");
+      if (!root || !root.querySelector(".fill-widget")) {
+        return;
+      }
+      applyPageState(state.pageIndex);
+      Array.from(root.querySelectorAll(".word-bank-item")).forEach(option => {
+        option.classList.remove("used", "selected");
+      });
+      (state.blanks || []).forEach(saved => {
+        if (!saved.blankId) {
+          return;
+        }
+        const blank = root.querySelector(`.word-blank-drop[data-blank-id="${CSS.escape(saved.blankId)}"]`);
+        if (!blank) {
+          return;
+        }
+        blank.dataset.optionId = saved.optionId || "";
+        blank.classList.remove("filled", "correct", "wrong", "unfilled");
+        (saved.classes || []).forEach(name => blank.classList.add(name));
+        const answer = blank.querySelector(".word-blank-answer");
+        if (answer) {
+          answer.textContent = saved.answerText || "";
+        }
+        if (saved.optionId) {
+          const option = root.querySelector(`.word-bank-item[data-option-id="${CSS.escape(saved.optionId)}"]`);
+          if (option) {
+            option.classList.add("used");
+          }
+        }
+      });
+      Object.entries(state.buttons || {}).forEach(([id, hidden]) => {
+        const button = document.getElementById(id);
+        if (button) {
+          button.classList.toggle("hidden", Boolean(hidden));
+        }
+      });
+      const result = document.getElementById("fillResult");
+      if (result) {
+        result.textContent = state.resultText || "";
+      }
+    }
+
+    function render(event) {
+      const args = event.data && event.data.args ? event.data.args : {};
+      const root = document.getElementById("root");
+      const previousState = collectFillState();
+      root.innerHTML = args.html || "";
+      window.__fillSavedState = previousState;
+      window.notifyPracticeReady = function notifyPracticeReady() {
+        Streamlit.setComponentValue({
+          action: "practice_ready",
+          nonce: String(Date.now()),
+        });
+      };
+      window.requestFillResize = function requestFillResize() {
+        window.setTimeout(resizeToContent, 0);
+      };
+      executeInlineScripts(root);
+      if (window.__fillSavedState) {
+        restoreFillState(window.__fillSavedState);
+        window.__fillSavedState = null;
+      }
+      requestAnimationFrame(resizeToContent);
+      window.setTimeout(resizeToContent, 120);
+      window.setTimeout(resizeToContent, 500);
+    }
+
+    window.addEventListener("resize", resizeToContent);
+    window.addEventListener("message", event => {
+      if (event.data && event.data.type === "streamlit:render") {
+        render(event);
+      }
+    });
+    Streamlit.setComponentReady();
+  </script>
+</body>
+</html>

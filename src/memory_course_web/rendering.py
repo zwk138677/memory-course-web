@@ -11,6 +11,9 @@ from typing import Any
 from .distractors import is_placeholder_distractor, neutral_fallback_candidates
 
 BLANK_SLOT_PLACEHOLDER = "______"
+PAGE_STANDALONE_RE = re.compile(r"^\s*(?:第\s*)?([0-9]{1,2}|[一二三四五六七八九十]{1,3})(?:[.．、])?\s*$")
+PAGE_PREFIX_RE = re.compile(r"^\s*(?:第\s*)?([0-9]{1,2}|[一二三四五六七八九十]{1,3})[.．、]\s+\S")
+KNOWLEDGE_ITEM_PAGE_RE = re.compile(r"^\s*知识小题\s*(\d+)\s*[.．、]\s*\S")
 
 
 def stable_options(correct: str, wrong: list[str], salt: str) -> list[str]:
@@ -385,6 +388,97 @@ def fill_sheet_html(
     return '<div class="fill-sheet">' + "\n".join(rendered) + "</div>"
 
 
+def _page_label_for_paragraph(paragraph: str) -> str | None:
+    stripped = str(paragraph or "").strip()
+    if not stripped:
+        return None
+    knowledge_item = KNOWLEDGE_ITEM_PAGE_RE.match(stripped)
+    if knowledge_item:
+        return knowledge_item.group(1)
+    standalone = PAGE_STANDALONE_RE.match(stripped)
+    if standalone:
+        return standalone.group(1)
+    prefixed = PAGE_PREFIX_RE.match(stripped)
+    if prefixed:
+        return prefixed.group(1)
+    return None
+
+
+def _fill_page_groups(knowledge_paragraphs: list[str]) -> list[dict[str, Any]]:
+    starts: list[tuple[int, str]] = []
+    for index, paragraph in enumerate(knowledge_paragraphs):
+        label = _page_label_for_paragraph(paragraph)
+        if label:
+            starts.append((index, label))
+
+    if len(starts) <= 1:
+        return [{"label": "1", "paragraph_indexes": list(range(len(knowledge_paragraphs)))}]
+
+    if starts[0][0] > 0:
+        starts[0] = (0, starts[0][1])
+
+    pages: list[dict[str, Any]] = []
+    for page_index, (start, label) in enumerate(starts):
+        end = starts[page_index + 1][0] if page_index + 1 < len(starts) else len(knowledge_paragraphs)
+        pages.append({"label": label, "paragraph_indexes": list(range(start, end))})
+    return pages
+
+
+def _fill_sheet_page_html(
+    knowledge_paragraphs: list[str],
+    blanks: list[dict[str, Any]],
+    images: list[dict[str, Any]] | None,
+    paragraph_indexes: list[int],
+    blank_numbers: dict[str, int],
+) -> str:
+    by_paragraph = _group_by_paragraph(blanks)
+    images_by_paragraph = _group_by_paragraph(images or [])
+
+    rendered: list[str] = []
+    for index in paragraph_indexes:
+        if index < 0 or index >= len(knowledge_paragraphs):
+            continue
+        paragraph = knowledge_paragraphs[index]
+        paragraph_images = images_by_paragraph.get(index, [])
+        paragraph_html = (
+            _render_text_with_marks_and_inline_images(
+                paragraph,
+                by_paragraph.get(index, []),
+                paragraph_images,
+                blank_numbers=blank_numbers,
+            )
+            if paragraph
+            else ""
+        )
+        image_html = image_group_html(paragraph_images)
+        if paragraph_html:
+            rendered.append(f"<p>{paragraph_html}</p>{image_html}")
+        elif image_html:
+            rendered.append(image_html)
+    return '<div class="fill-sheet">' + "\n".join(rendered) + "</div>"
+
+
+def _renumber_word_bank(word_bank: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    renumbered: list[dict[str, Any]] = []
+    for index, option in enumerate(word_bank, start=1):
+        item = dict(option)
+        item["number"] = index
+        renumbered.append(item)
+    return renumbered
+
+
+def _page_nav_html(pages: list[dict[str, Any]]) -> str:
+    if len(pages) <= 1:
+        return ""
+    labels = []
+    for index, page in enumerate(pages):
+        label = html.escape(str(page.get("label") or index + 1))
+        labels.append(
+            f'<span class="fill-page-number" data-page-target="{index}" aria-label="第 {label} 页">{label}</span>'
+        )
+    return '<nav class="fill-page-nav" aria-label="知识填空页码">' + "\n".join(labels) + "</nav>"
+
+
 def word_bank_html(word_bank: list[dict[str, Any]]) -> str:
     items = []
     for option in word_bank:
@@ -409,9 +503,29 @@ def fill_interaction_html(
     blanks: list[dict[str, Any]],
     images: list[dict[str, Any]] | None,
     word_bank: list[dict[str, Any]],
+    course_cid: str = "",
 ) -> str:
-    sheet = fill_sheet_html(knowledge_paragraphs, blanks, images)
-    bank = word_bank_html(word_bank)
+    page_groups = _fill_page_groups(knowledge_paragraphs)
+    blank_numbers = {str(blank.get("id", "")): index for index, blank in enumerate(blanks, start=1)}
+    page_sections: list[str] = []
+    bank_sections: list[str] = []
+    for page_index, page in enumerate(page_groups):
+        paragraph_indexes = page["paragraph_indexes"]
+        paragraph_set = set(paragraph_indexes)
+        page_blanks = [blank for blank in blanks if int(blank.get("paragraph_index", -1)) in paragraph_set]
+        page_blank_ids = {str(blank.get("id", "")) for blank in page_blanks}
+        page_word_bank = [option for option in word_bank if str(option.get("source_blank_id", "")) in page_blank_ids]
+        active_class = " active" if page_index == 0 else ""
+        page_sections.append(
+            f'<section class="fill-page{active_class}" data-page-index="{page_index}">'
+            + _fill_sheet_page_html(knowledge_paragraphs, page_blanks, images, paragraph_indexes, blank_numbers)
+            + "</section>"
+        )
+        page_bank_html = word_bank_html(_renumber_word_bank(page_word_bank)) if page_word_bank else '<div class="word-bank word-bank-empty">本页暂无选词。</div>'
+        bank_sections.append(
+            f'<section class="word-bank-page{active_class}" data-page-index="{page_index}">{page_bank_html}</section>'
+        )
+    nav = _page_nav_html(page_groups)
     return f"""
 <style>
   body {{
@@ -421,6 +535,14 @@ def fill_interaction_html(
     background: transparent;
   }}
   .fill-widget {{ padding: 0 1px 18px; }}
+  .fill-page,
+  .word-bank-page {{
+    display: none;
+  }}
+  .fill-page.active,
+  .word-bank-page.active {{
+    display: block;
+  }}
   .fill-sheet {{
     border: 1px solid #e6c98f;
     border-left: 6px solid #d5961e;
@@ -459,6 +581,7 @@ def fill_interaction_html(
   .word-blank-number {{ color: #835108; font-size: .76rem; font-weight: 800; vertical-align: super; }}
   .word-blank-answer {{ color: #2f261a; font-weight: 800; min-width: 1rem; }}
   .word-blank-line {{ color: transparent; letter-spacing: .04rem; }}
+  .word-blank.filled .word-blank-number {{ display: none; }}
   .word-blank.filled .word-blank-line {{ display: none; }}
   .word-blank.filled {{ width: auto; min-width: 6.8rem; }}
   .word-blank.correct {{ background: #e8f7ed; border-color: #49a36f; border-bottom-color: #278653; }}
@@ -468,6 +591,29 @@ def fill_interaction_html(
     margin: 1.08rem 0 .58rem;
     color: #3a2a13;
     font-weight: 800;
+  }}
+  .fill-page-nav {{
+    display: flex;
+    align-items: center;
+    gap: .3rem;
+    margin: .9rem 0 .2rem;
+    padding: .15rem 0 .2rem;
+  }}
+  .fill-page-number {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.4rem;
+    border: 0;
+    border-bottom: 3px solid transparent;
+    padding: .5rem .56rem .45rem;
+    background: transparent;
+    color: #6f5a36;
+    font-weight: 700;
+  }}
+  .fill-page-number.active {{
+    color: #2f261a;
+    border-bottom-color: #3a2a13;
   }}
   .word-bank {{
     display: grid;
@@ -515,7 +661,12 @@ def fill_interaction_html(
     font-size: .82rem;
   }}
   .word-bank-text {{ line-height: 1.45; }}
-  .fill-actions {{ display: flex; gap: .65rem; align-items: center; flex-wrap: wrap; margin-top: .95rem; }}
+  .word-bank-empty {{
+    display: block;
+    color: #8f7446;
+    font-weight: 700;
+  }}
+  .fill-actions {{ display: flex; gap: .82rem; align-items: center; flex-wrap: wrap; margin-top: .95rem; }}
   .fill-actions button {{
     border: 1px solid #dfc286;
     border-radius: 7px;
@@ -526,6 +677,19 @@ def fill_interaction_html(
     cursor: pointer;
   }}
   .fill-actions .primary {{ background: #b86f00; border-color: #b86f00; color: #fff; }}
+  .fill-actions .hidden {{ display: none; }}
+  .fill-action-link {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #b86f00;
+    border-radius: 7px;
+    padding: .52rem .92rem;
+    background: #b86f00;
+    color: #fff;
+    font-weight: 800;
+    text-decoration: none;
+  }}
   .fill-actions button:hover {{ border-color: #b86f00; }}
   .fill-result {{ font-weight: 800; color: #3a2a13; }}
   .course-images {{ display: flex; flex-wrap: wrap; gap: .9rem; margin: .6rem 0 1.1rem; }}
@@ -592,11 +756,18 @@ def fill_interaction_html(
   }}
 </style>
 <div class="fill-widget">
-  {sheet}
+  <div class="fill-pages">
+    {"".join(page_sections)}
+  </div>
   <div class="word-bank-title">选词库</div>
-  {bank}
+  <div class="word-bank-pages">
+    {"".join(bank_sections)}
+  </div>
+  {nav}
   <div class="fill-actions">
     <button class="primary" type="button" id="checkAnswers">提交检查</button>
+    <button class="primary hidden" type="button" id="goNextPage">下一页</button>
+    <button class="primary hidden" type="button" id="enterPractice">进入快速练习</button>
     <button type="button" id="resetAnswers">重做</button>
     <span class="fill-result" id="fillResult"></span>
   </div>
@@ -605,7 +776,28 @@ def fill_interaction_html(
 (() => {{
   const options = Array.from(document.querySelectorAll(".word-bank-item"));
   const blanks = Array.from(document.querySelectorAll(".word-blank-drop"));
+  const fillPages = Array.from(document.querySelectorAll(".fill-page"));
+  const bankPages = Array.from(document.querySelectorAll(".word-bank-page"));
+  const pageButtons = Array.from(document.querySelectorAll("[data-page-target]"));
+  const resultEl = document.getElementById("fillResult");
+  const checkButton = document.getElementById("checkAnswers");
+  const resetButton = document.getElementById("resetAnswers");
+  const nextPageButton = document.getElementById("goNextPage");
+  const enterPracticeButton = document.getElementById("enterPractice");
+  let currentPage = 0;
   let selectedOptionId = null;
+
+  function requestResize() {{
+    if (typeof window.requestFillResize === "function") {{
+      window.requestFillResize();
+    }}
+  }}
+
+  function activeBlanks() {{
+    const activePage = fillPages[currentPage];
+    if (!activePage) return blanks;
+    return Array.from(activePage.querySelectorAll(".word-blank-drop"));
+  }}
 
   function optionById(optionId) {{
     return options.find(option => option.dataset.optionId === optionId);
@@ -618,6 +810,24 @@ def fill_interaction_html(
   function setSelected(optionId) {{
     selectedOptionId = optionId;
     options.forEach(option => option.classList.toggle("selected", option.dataset.optionId === optionId));
+  }}
+
+  function showPage(pageIndex) {{
+    if (!fillPages.length) return;
+    currentPage = Math.max(0, Math.min(pageIndex, fillPages.length - 1));
+    fillPages.forEach((page, index) => page.classList.toggle("active", index === currentPage));
+    bankPages.forEach((page, index) => page.classList.toggle("active", index === currentPage));
+    pageButtons.forEach(button => {{
+      const active = Number(button.dataset.pageTarget) === currentPage;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-current", active ? "page" : "false");
+    }});
+    if (checkButton) checkButton.classList.remove("hidden");
+    if (nextPageButton) nextPageButton.classList.add("hidden");
+    if (enterPracticeButton) enterPracticeButton.classList.add("hidden");
+    setSelected(null);
+    if (resultEl) resultEl.textContent = "";
+    requestResize();
   }}
 
   function clearBlank(blank) {{
@@ -683,9 +893,70 @@ def fill_interaction_html(
     }});
   }});
 
-  document.getElementById("checkAnswers").addEventListener("click", () => {{
+  showPage(0);
+
+  if (nextPageButton) {{
+    nextPageButton.addEventListener("click", () => showPage(currentPage + 1));
+  }}
+
+  if (enterPracticeButton) {{
+    enterPracticeButton.addEventListener("click", () => {{
+      if (typeof window.notifyPracticeReady === "function") {{
+        window.notifyPracticeReady();
+      }}
+    }});
+  }}
+
+  function collectState() {{
+    return {{
+      pageIndex: currentPage,
+      blanks: blanks.map(blank => ({{
+        blankId: blank.dataset.blankId || "",
+        optionId: blank.dataset.optionId || "",
+        answerText: blank.querySelector(".word-blank-answer")?.textContent || "",
+        classes: Array.from(blank.classList).filter(name =>
+          ["filled", "correct", "wrong", "unfilled"].includes(name)
+        ),
+      }})),
+      buttons: {{
+        checkAnswers: checkButton ? checkButton.classList.contains("hidden") : false,
+        goNextPage: nextPageButton ? nextPageButton.classList.contains("hidden") : true,
+        enterPractice: enterPracticeButton ? enterPracticeButton.classList.contains("hidden") : true,
+      }},
+      resultText: resultEl ? resultEl.textContent || "" : "",
+    }};
+  }}
+
+  function restoreState(state) {{
+    if (!state) return;
+    showPage(Number(state.pageIndex) || 0);
+    options.forEach(option => option.classList.remove("used", "selected"));
+    (state.blanks || []).forEach(saved => {{
+      const blank = blanks.find(item => item.dataset.blankId === saved.blankId);
+      if (!blank) return;
+      blank.dataset.optionId = saved.optionId || "";
+      blank.classList.remove("filled", "correct", "wrong", "unfilled");
+      (saved.classes || []).forEach(name => blank.classList.add(name));
+      const answer = blank.querySelector(".word-blank-answer");
+      if (answer) answer.textContent = saved.answerText || "";
+      if (saved.optionId) {{
+        const option = optionById(saved.optionId);
+        if (option) option.classList.add("used");
+      }}
+    }});
+    if (checkButton && state.buttons) checkButton.classList.toggle("hidden", Boolean(state.buttons.checkAnswers));
+    if (nextPageButton && state.buttons) nextPageButton.classList.toggle("hidden", Boolean(state.buttons.goNextPage));
+    if (enterPracticeButton && state.buttons) enterPracticeButton.classList.toggle("hidden", Boolean(state.buttons.enterPractice));
+    if (resultEl) resultEl.textContent = state.resultText || "";
+    requestResize();
+  }}
+
+  window.__fillWidgetApi = {{ collectState, restoreState }};
+
+  checkButton.addEventListener("click", () => {{
     let score = 0;
-    blanks.forEach(blank => {{
+    const pageBlanks = activeBlanks();
+    pageBlanks.forEach(blank => {{
       blank.classList.remove("correct", "wrong", "unfilled");
       const filled = (blank.querySelector(".word-blank-answer")?.textContent || "").trim();
       const expected = (blank.dataset.answer || "").trim();
@@ -698,15 +969,41 @@ def fill_interaction_html(
         blank.classList.add("wrong");
       }}
     }});
-    document.getElementById("fillResult").textContent = `得分：${{score}} / ${{blanks.length}}`;
+    const total = pageBlanks.length;
+    const accuracy = total ? score / total : 1;
+    const percent = Math.round(accuracy * 100);
+    const passed = accuracy >= 0.6;
+    if (resultEl) {{
+      resultEl.textContent = passed
+        ? `本页正确率：${{percent}}%（${{score}}/${{total}}），已达标`
+        : `本页正确率：${{percent}}%（${{score}}/${{total}}），未达标，请重做`;
+    }}
+    checkButton.classList.add("hidden");
+    if (passed) {{
+      if (currentPage >= fillPages.length - 1) {{
+        if (enterPracticeButton) enterPracticeButton.classList.remove("hidden");
+      }} else if (nextPageButton) {{
+        nextPageButton.classList.remove("hidden");
+      }}
+    }}
+    requestResize();
   }});
 
-  document.getElementById("resetAnswers").addEventListener("click", () => {{
-    blanks.forEach(clearBlank);
-    options.forEach(option => option.classList.remove("used", "selected"));
+  resetButton.addEventListener("click", () => {{
+    activeBlanks().forEach(clearBlank);
+    options.forEach(option => option.classList.remove("selected"));
     selectedOptionId = null;
-    document.getElementById("fillResult").textContent = "";
+    if (checkButton) checkButton.classList.remove("hidden");
+    if (nextPageButton) nextPageButton.classList.add("hidden");
+    if (enterPracticeButton) enterPracticeButton.classList.add("hidden");
+    if (resultEl) resultEl.textContent = "";
+    requestResize();
   }});
+
+  if (window.__fillSavedState) {{
+    restoreState(window.__fillSavedState);
+    window.__fillSavedState = null;
+  }}
 }})();
 </script>
 """

@@ -1,4 +1,5 @@
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -69,6 +70,122 @@ def test_parse_split_question_heading_format():
     assert questions[0]["stem"] == "圆是下列哪一种图形？"
     assert questions[0]["correct"] == "中心对称图形"
     assert len(questions[0]["wrong"]) == 3
+
+
+def test_parse_physics_question_source_and_analysis_without_category():
+    paragraphs = [
+        ParsedParagraph("— 配套练习题 —"),
+        ParsedParagraph("【第一题】："),
+        ParsedParagraph("【来源：知识小题1】"),
+        ParsedParagraph("【题目内容】：下列关于分子热运动的说法正确的是哪一项？"),
+        ParsedParagraph("【正确选项】：温度越高，分子热运动越剧烈"),
+        ParsedParagraph("【错误选项1】：温度越高，分子热运动越缓慢"),
+        ParsedParagraph("【错误选项2】：分子静止不动"),
+        ParsedParagraph("【错误选项3】：热运动只发生在固体中"),
+        ParsedParagraph("【解析】：分子永不停息地做无规则运动，温度越高运动越剧烈。"),
+    ]
+
+    questions = _parse_questions(paragraphs, 0)
+
+    assert len(questions) == 1
+    assert questions[0]["category"] == ""
+    assert questions[0]["source"] == "知识小题1"
+    assert questions[0]["analysis"] == "分子永不停息地做无规则运动，温度越高运动越剧烈。"
+    assert questions[0]["stem"] == "下列关于分子热运动的说法正确的是哪一项？"
+
+
+def _write_minimal_docx(path: Path, texts: list[str]) -> None:
+    def paragraph(text: str) -> str:
+        return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        + "".join(paragraph(text) for text in texts)
+        + "<w:sectPr/></w:body></w:document>"
+    )
+    content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"""
+    root_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"""
+    doc_rels = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"""
+    with ZipFile(path, "w", ZIP_DEFLATED) as package:
+        package.writestr("[Content_Types].xml", content_types)
+        package.writestr("_rels/.rels", root_rels)
+        package.writestr("word/document.xml", document)
+        package.writestr("word/_rels/document.xml.rels", doc_rels)
+
+
+def test_parse_physics_course_title_and_hides_title_paragraphs(tmp_path: Path):
+    docx = tmp_path / "physics.docx"
+    _write_minimal_docx(
+        docx,
+        [
+            "【知识点 1】",
+            "一、分子动理论",
+            "知识小题1.分子热运动",
+            "一切物质的分子都在不停地做无规则运动。",
+            "— 配套练习题 —",
+            "【第一题】：",
+            "【来源：知识小题1】",
+            "【题目内容】：下列说法正确的是哪一项？",
+            "【正确选项】：分子在不停地做无规则运动",
+            "【错误选项1】：分子总是静止的",
+            "【错误选项2】：只有液体分子运动",
+            "【错误选项3】：温度与分子运动无关",
+            "【解析】：分子动理论认为，分子在不停地做无规则运动。",
+        ],
+    )
+
+    payload = validate_finished_course_payload(parse_finished_course(docx).to_payload())
+
+    assert payload["title"] == "分子动理论"
+    assert payload["structure"] == "physics_course"
+    assert "【知识点 1】" not in payload["knowledge_paragraphs"]
+    assert "一、分子动理论" not in payload["knowledge_paragraphs"]
+    assert payload["knowledge_paragraphs"][0] == "知识小题1.分子热运动"
+    assert payload["quick_practice"][0]["source"] == "知识小题1"
+    assert payload["quick_practice"][0]["analysis"] == "分子动理论认为，分子在不停地做无规则运动。"
+
+
+def test_parse_direct_title_physics_reference_course(tmp_path: Path):
+    docx = tmp_path / "physics_reference.docx"
+    _write_minimal_docx(
+        docx,
+        [
+            "分子动理论",
+            "知识小题1.物质构成",
+            "物质是由大量分子和原子构成的",
+            "知识小题2.分子热运动",
+            "定义：分子在永不停息地做无规则运动",
+            "— 配套练习题 —",
+            "【第一题】：",
+            "【来源：知识小题1】",
+            "【题目内容】：关于物质构成，下列说法正确的是",
+            "【正确选项】：物质是由大量分子和原子构成的",
+            "【错误选项1】：一切物质都只由分子构成",
+            "【错误选项2】：分子不能再分",
+            "【错误选项3】：原子不能构成物质",
+            "【解析】：物质可由分子、原子等微粒构成。",
+        ],
+    )
+
+    payload = validate_finished_course_payload(parse_finished_course(docx).to_payload())
+
+    assert payload["title"] == "分子动理论"
+    assert payload["structure"] == "physics_reference_course"
+    assert payload["knowledge_paragraphs"][0] == "知识小题1.物质构成"
+    assert "分子动理论" not in payload["knowledge_paragraphs"]
+    assert payload["quick_practice"][0]["source"] == "知识小题1"
+    assert payload["quick_practice"][0]["analysis"] == "物质可由分子、原子等微粒构成。"
 
 
 def test_parse_mathtype_preview_as_inline_formula():

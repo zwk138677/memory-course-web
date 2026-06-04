@@ -4,6 +4,7 @@ import hashlib
 import html
 import os
 from pathlib import Path
+import random
 import tempfile
 from typing import Any
 
@@ -17,6 +18,19 @@ from src.memory_course_web.validation import validate_finished_course_payload
 
 
 st.set_page_config(page_title="成品背记资料学习页", layout="wide")
+
+PARSER_SCHEMA_VERSION = "2026-06-03-physics-ui-v4"
+UPLOAD_NONCE_KEY = "course_upload_nonce"
+MATH_CATEGORY_LABELS = {"基础辨析", "易错辨析", "简单应用"}
+PRACTICE_SAMPLE_SIZE = 5
+COURSE_STAGE_SHOW = "show"
+COURSE_STAGE_FILL = "fill"
+COURSE_STAGE_PRACTICE = "practice"
+
+FILL_INTERACTION_COMPONENT = components.declare_component(
+    "fill_interaction_component",
+    path=str((Path(__file__).parent / "src" / "memory_course_web" / "fill_component").resolve()),
+)
 
 
 APP_CSS = """
@@ -67,6 +81,34 @@ h1, h2, h3 {
 .course-ready-card p {
   margin: 0;
   color: #7b674c;
+}
+.course-ready-card,
+.practice-result-card,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker) {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.course-ready-card > *,
+.practice-result-card > *,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker) > div {
+  position: relative;
+  z-index: 1;
+}
+.course-ready-card::after,
+.practice-result-card::after,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker)::after {
+  content: "";
+  position: absolute;
+  right: 1.35rem;
+  bottom: .75rem;
+  width: 220px;
+  height: 72px;
+  background: url("/app/static/shiguang-logo.png") center / contain no-repeat;
+  opacity: .075;
+  filter: blur(1.2px);
+  pointer-events: none;
+  z-index: 0;
 }
 .course-title-card {
   padding: 1.05rem 1.25rem;
@@ -221,17 +263,36 @@ button[kind="primary"] {
   display: block;
   padding: .035em .16em 0;
 }
-.source-note {
+.flow-steps {
+  display: flex;
+  gap: 0;
+  margin: .4rem 0 1rem;
+  border-bottom: 1px solid #e6c98f;
+}
+.flow-step {
   display: inline-flex;
   align-items: center;
-  margin: 0 0 .8rem;
-  padding: .38rem .68rem;
-  border: 1px solid #efd9a4;
-  border-radius: 999px;
-  background: #fff6d8;
-  color: #835108;
-  font-size: .88rem;
+  justify-content: center;
+  min-width: 6.2rem;
+  padding: .62rem .85rem .58rem;
+  border: 1px solid #ead7ad;
+  border-bottom: 0;
+  background: #fff8e7;
+  color: #6f5a36;
   font-weight: 700;
+  user-select: none;
+}
+.flow-step.active {
+  background: #fffdf8;
+  color: #8a4e00;
+  box-shadow: inset 0 -3px 0 #d5961e;
+}
+.course-flow-actions {
+  display: flex;
+  gap: .7rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 1rem;
 }
 .practice-group-title {
   display: flex;
@@ -304,12 +365,58 @@ div[role="radiogroup"] label:hover {
 .practice-result-card strong {
   color: #835108;
 }
+.practice-result-rate {
+  display: inline-flex;
+  margin-left: 1.15rem;
+  padding-left: 1.15rem;
+  border-left: 1px solid #e6c98f;
+  color: #835108;
+  font-weight: 800;
+}
 .wrong-item {
   padding: .75rem .85rem;
   margin: .7rem 0 0;
   border-left: 4px solid #bd4a43;
   border-radius: 7px;
   background: #fff5f3;
+}
+.practice-review-item {
+  padding: .85rem .95rem;
+  margin: .75rem 0 0;
+  border: 1px solid #ead7ad;
+  border-left-width: 5px;
+  border-radius: 8px;
+  line-height: 1.75;
+  color: #2f261a;
+}
+.practice-review-item.is-correct {
+  border-left-color: #4f9a58;
+  background: #f1fbf0;
+}
+.practice-review-item.is-wrong {
+  border-left-color: #bd4a43;
+  background: #fff5f3;
+}
+.practice-review-status {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 .35rem;
+  padding: .12rem .48rem;
+  border-radius: 999px;
+  font-size: .84rem;
+  font-weight: 800;
+}
+.practice-review-item.is-correct .practice-review-status {
+  background: #dff2df;
+  color: #27652f;
+}
+.practice-review-item.is-wrong .practice-review-status {
+  background: #ffe2dd;
+  color: #8f2c26;
+}
+.practice-review-analysis {
+  margin-top: .28rem;
+  color: #5e4c31;
 }
 @media (max-width: 720px) {
   .main .block-container {
@@ -321,6 +428,11 @@ div[role="radiogroup"] label:hover {
   }
   .learning-card {
     padding: .85rem;
+  }
+  .course-ready-card::after,
+  .practice-result-card::after,
+  div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker)::after {
+    display: none;
   }
 }
 </style>
@@ -350,37 +462,183 @@ def _all_course_images(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return images
 
 
+def _tag_parser_schema(payload: dict[str, Any]) -> dict[str, Any]:
+    tagged = dict(payload)
+    tagged["_parser_schema_version"] = PARSER_SCHEMA_VERSION
+    return tagged
+
+
+def _has_current_parser_schema(payload: Any) -> bool:
+    return isinstance(payload, dict) and payload.get("_parser_schema_version") == PARSER_SCHEMA_VERSION
+
+
+def _is_physics_payload(payload: dict[str, Any]) -> bool:
+    structure = str(payload.get("structure", ""))
+    if structure.startswith("physics"):
+        return True
+    if any(str(text).strip().startswith("知识小题") for text in payload.get("knowledge_paragraphs", [])):
+        return True
+    return any(
+        str(question.get("source", "")).startswith("知识小题") or str(question.get("analysis", "")).strip()
+        for question in payload.get("quick_practice", [])
+        if isinstance(question, dict)
+    )
+
+
+def _payload_needs_reparse(payload: Any) -> bool:
+    if not _has_current_parser_schema(payload):
+        return True
+    if not isinstance(payload, dict) or not _is_physics_payload(payload):
+        return False
+    questions = [question for question in payload.get("quick_practice", []) if isinstance(question, dict)]
+    if any(str(question.get("category", "")).strip() in MATH_CATEGORY_LABELS for question in questions):
+        return True
+    return bool(questions) and any(not str(question.get("analysis", "")).strip() for question in questions)
+
+
+def _upload_widget_key() -> str:
+    return f"course_upload_{int(st.session_state.get(UPLOAD_NONCE_KEY, 0))}"
+
+
+def _practice_result_key(cid: str) -> str:
+    return f"practice_result_{cid}"
+
+
+def _practice_sample_key(cid: str) -> str:
+    return f"practice_sample_{cid}"
+
+
+def _practice_round_key(cid: str) -> str:
+    return f"practice_round_{cid}"
+
+
+def _course_stage_key(cid: str) -> str:
+    return f"course_stage_{cid}"
+
+
+def _fill_progress_key(cid: str) -> str:
+    return f"fill_progress_{cid}"
+
+
+def _fill_component_action_key(cid: str) -> str:
+    return f"fill_component_action_{cid}"
+
+
+def _set_course_stage(cid: str, stage: str) -> None:
+    st.session_state[_course_stage_key(cid)] = stage
+
+
+def _current_course_stage(cid: str) -> str:
+    stage = str(st.session_state.get(_course_stage_key(cid), COURSE_STAGE_SHOW))
+    if stage not in {COURSE_STAGE_SHOW, COURSE_STAGE_FILL, COURSE_STAGE_PRACTICE}:
+        return COURSE_STAGE_SHOW
+    return stage
+
+
+def _clear_fill_progress(cid: str) -> None:
+    st.session_state.pop(_fill_progress_key(cid), None)
+    st.session_state.pop(_fill_component_action_key(cid), None)
+
+
+def _handle_fill_component_result(cid: str, result: Any) -> bool:
+    if not isinstance(result, dict) or result.get("action") != "practice_ready":
+        return False
+    nonce = str(result.get("nonce") or "")
+    consumed_key = _fill_component_action_key(cid)
+    consumed_nonce = str(st.session_state.get(consumed_key, ""))
+    if nonce and consumed_nonce == nonce:
+        return False
+    st.session_state[consumed_key] = nonce or "practice_ready"
+    _set_course_stage(cid, COURSE_STAGE_PRACTICE)
+    return True
+
+
+def _clear_practice_state(cid: str, *, clear_sample: bool = True) -> None:
+    st.session_state.pop(_practice_result_key(cid), None)
+    if clear_sample:
+        st.session_state.pop(_practice_sample_key(cid), None)
+        st.session_state.pop(_practice_round_key(cid), None)
+
+
+def _create_practice_sample(cid: str, question_count: int) -> dict[str, Any]:
+    sample_size = min(PRACTICE_SAMPLE_SIZE, max(0, question_count))
+    indexes = random.sample(list(range(question_count)), sample_size) if sample_size else []
+    round_id = int(st.session_state.get(_practice_round_key(cid), 0)) + 1
+    sample = {"indexes": indexes, "round": round_id}
+    st.session_state[_practice_sample_key(cid)] = sample
+    st.session_state[_practice_round_key(cid)] = round_id
+    return sample
+
+
+def _current_practice_sample(cid: str, question_count: int) -> dict[str, Any]:
+    sample = st.session_state.get(_practice_sample_key(cid))
+    if isinstance(sample, dict):
+        indexes = sample.get("indexes", [])
+        if (
+            isinstance(indexes, list)
+            and len(indexes) == min(PRACTICE_SAMPLE_SIZE, max(0, question_count))
+            and all(isinstance(index, int) and 0 <= index < question_count for index in indexes)
+        ):
+            return {"indexes": indexes, "round": int(sample.get("round", st.session_state.get(_practice_round_key(cid), 0)))}
+    return _create_practice_sample(cid, question_count)
+
+
+def _reset_practice_sample(cid: str) -> None:
+    st.session_state.pop(_practice_sample_key(cid), None)
+
+
+def _practice_accuracy_percent(score: int, total: int) -> int:
+    return round(score / total * 100) if total else 0
+
+
 @st.cache_data(show_spinner=False)
-def _parse_from_upload(file_name: str, file_bytes: bytes) -> dict[str, Any]:
+def _parse_from_upload(file_name: str, file_bytes: bytes, parser_schema_version: str) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="finished_course_upload_") as temp_dir:
         safe_name = Path(file_name).name or "course.docx"
         docx_path = Path(temp_dir) / safe_name
         docx_path.write_bytes(file_bytes)
         course = parse_finished_course(docx_path)
-    return validate_finished_course_payload(course.to_payload())
+    payload = validate_finished_course_payload(course.to_payload())
+    return {**payload, "_parser_schema_version": parser_schema_version}
 
 
-def _reset_course_state() -> None:
+def _reset_course_state(*, clear_upload_signature: bool = False, reset_uploader: bool = False) -> None:
     payload = st.session_state.get("course_payload")
     if payload:
         cid = course_id(payload)
-        st.session_state.pop(f"practice_result_{cid}", None)
+        _clear_practice_state(cid)
+        _clear_fill_progress(cid)
+        st.session_state.pop(_course_stage_key(cid), None)
     st.session_state.pop("course_payload", None)
+    if clear_upload_signature:
+        st.session_state.pop("uploaded_signature", None)
+        st.session_state.pop("parsed_payload", None)
+        _parse_from_upload.clear()
+    if reset_uploader:
+        st.session_state[UPLOAD_NONCE_KEY] = int(st.session_state.get(UPLOAD_NONCE_KEY, 0)) + 1
 
 
-def _distractor_sources(payload: dict[str, Any]) -> list[str]:
-    sources = {
-        str(blank.get("distractor_source", "")).strip()
-        for blank in payload.get("blanks", [])
-        if str(blank.get("distractor_source", "")).strip()
-    }
-    if not sources:
-        sources = {str(source).strip() for source in payload.get("distractor_summary", {}) if str(source).strip()}
+def _consume_flow_action(cid: str) -> None:
+    action = str(st.query_params.get("flow_action", ""))
+    flow_course = str(st.query_params.get("flow_course", ""))
+    if action == "practice" and flow_course == cid:
+        _set_course_stage(cid, COURSE_STAGE_PRACTICE)
+        for key in ("flow_action", "flow_course", "flow_nonce"):
+            if key in st.query_params:
+                del st.query_params[key]
 
-    preferred = ["DeepSeek", "代码兜底"]
-    ordered = [source for source in preferred if source in sources]
-    ordered.extend(sorted(source for source in sources if source not in preferred))
-    return ordered
+
+def _step_indicator_html(active_stage: str) -> str:
+    steps = [
+        (COURSE_STAGE_SHOW, "知识展示"),
+        (COURSE_STAGE_FILL, "知识填空"),
+        (COURSE_STAGE_PRACTICE, "快速练习"),
+    ]
+    items = []
+    for stage, label in steps:
+        active = " active" if stage == active_stage else ""
+        items.append(f'<span class="flow-step{active}">{html.escape(label)}</span>')
+    return '<nav class="flow-steps" aria-label="学习流程">' + "".join(items) + "</nav>"
 
 
 def _render_fill_tab(payload: dict[str, Any]) -> None:
@@ -390,60 +648,85 @@ def _render_fill_tab(payload: dict[str, Any]) -> None:
         st.info("这份资料没有识别到 Word 下划线填空。")
         return
 
-    sources = _distractor_sources(payload)
-    if sources:
-        st.markdown(
-            f'<div class="source-note">干扰项来源：{html.escape("、".join(sources))}</div>',
-            unsafe_allow_html=True,
-        )
-
     word_bank = build_word_bank(blanks, cid, distractor_ratio=1.0)
-    height = max(720, min(1500, 330 + len(payload["knowledge_paragraphs"]) * 72 + len(word_bank) * 26))
-    components.html(
-        fill_interaction_html(
+    result = FILL_INTERACTION_COMPONENT(
+        html=fill_interaction_html(
             payload["knowledge_paragraphs"],
             blanks,
             payload.get("knowledge_images", []),
             word_bank,
+            course_cid=cid,
         ),
-        height=height,
-        scrolling=True,
+        default={},
+        key=f"fill_interaction_{cid}",
     )
+    if _handle_fill_component_result(cid, result):
+        st.rerun()
 
 
 def _render_practice_tab(payload: dict[str, Any]) -> None:
     cid = course_id(payload)
-    result_key = f"practice_result_{cid}"
+    result_key = _practice_result_key(cid)
     questions = payload["quick_practice"]
+    physics_payload = _is_physics_payload(payload)
 
     if result_key in st.session_state:
         result = st.session_state[result_key]
+        result_items = result.get("items", result.get("wrong_items", []))
+        result_total = len(result_items)
+        result_score = int(result.get("score", 0))
+        result_accuracy = _practice_accuracy_percent(result_score, result_total)
         st.markdown(
             f'<div class="practice-result-card"><strong>快速练习得分：</strong>'
-            f'{result["score"]} / {len(questions)}</div>',
+            f'{result_score} / {result_total}'
+            f'<span class="practice-result-rate">正确率：{result_accuracy}%</span></div>',
             unsafe_allow_html=True,
         )
-        for item in result["wrong_items"]:
+        for item in result_items:
+            display_index = int(item.get("display_index", item.get("index", 0)) or 0)
+            original_index = int(item.get("original_index", display_index - 1) or 0)
+            source_question = questions[original_index] if 0 <= original_index < len(questions) else {}
+            is_correct = bool(item.get("is_correct"))
+            state_class = "is-correct" if is_correct else "is-wrong"
+            status = "正确" if is_correct else "错误"
+            analysis = str(item.get("analysis") or source_question.get("analysis", "")).strip()
+            analysis_html = (
+                f'<div class="practice-review-analysis"><strong>解析：</strong>{html.escape(analysis)}</div>'
+                if analysis
+                else ""
+            )
             st.markdown(
-                '<div class="wrong-item">'
-                f'<strong>第 {item["index"]} 题</strong><br>'
+                f'<div class="practice-review-item {state_class}">'
+                f'<span class="practice-review-status">{status}</span><br>'
+                f'<strong>第 {display_index} 题</strong><br>'
                 f'{html.escape(str(item["stem"]))}<br>'
                 f'你的选择：{html.escape(str(item["selected"] or "未作答"))}<br>'
                 f'正确答案：{html.escape(str(item["correct"]))}'
+                f'{analysis_html}'
                 '</div>',
                 unsafe_allow_html=True,
             )
         if st.button("重新练习", key=f"practice_restart_{cid}"):
             st.session_state.pop(result_key, None)
+            _reset_practice_sample(cid)
             st.rerun()
         return
 
+    sample = _current_practice_sample(cid, len(questions))
+    sample_indexes = list(sample["indexes"])
+    sample_round = int(sample["round"])
+    sampled_questions = [
+        (display_index, original_index, questions[original_index])
+        for display_index, original_index in enumerate(sample_indexes, start=1)
+    ]
+
     with st.form(f"practice_form_{cid}"):
-        selected_answers: list[tuple[int, dict[str, Any], str | None]] = []
+        selected_answers: list[tuple[int, int, dict[str, Any], str | None]] = []
         current_category = ""
-        for index, question in enumerate(questions, start=1):
-            if question["category"] != current_category:
-                current_category = question["category"]
+        for display_index, original_index, question in sampled_questions:
+            category = str(question.get("category") or "").strip()
+            if not physics_payload and category and category != current_category:
+                current_category = category
                 st.markdown(
                     f'<div class="practice-group-title">{html.escape(str(current_category))}</div>',
                     unsafe_allow_html=True,
@@ -451,63 +734,85 @@ def _render_practice_tab(payload: dict[str, Any]) -> None:
             with st.container(border=True):
                 st.markdown(
                     '<div class="question-stem">'
-                    f'<span class="question-number">{index}</span>'
+                    f'<span class="question-number">{display_index}</span>'
                     f'<span>{html.escape(str(question["stem"]))}</span>'
                     '</div>',
                     unsafe_allow_html=True,
                 )
                 if question.get("images"):
                     st.markdown(image_group_html(question["images"]), unsafe_allow_html=True)
-                options = stable_options(question["correct"], question["wrong"], f"{cid}-question-{index}")
+                options = stable_options(question["correct"], question["wrong"], f"{cid}-question-{sample_round}-{original_index}")
                 option_labels = {option: f"{chr(65 + option_index)}. {option}" for option_index, option in enumerate(options)}
                 selected = st.radio(
                     "选择答案",
                     options,
                     index=None,
-                    key=f"practice_{cid}_{index}",
+                    key=f"practice_{cid}_{sample_round}_{display_index}",
                     label_visibility="collapsed",
                     format_func=lambda value, labels=option_labels: labels.get(value, value),
                 )
-                selected_answers.append((index, question, selected))
+                selected_answers.append((display_index, original_index, question, selected))
         submitted = st.form_submit_button("提交快速练习")
 
     if submitted:
-        wrong_items = []
+        result_items = []
         score = 0
-        for index, question, selected in selected_answers:
-            if selected == question["correct"]:
+        for display_index, original_index, question, selected in selected_answers:
+            is_correct = selected == question["correct"]
+            if is_correct:
                 score += 1
-            else:
-                wrong_items.append(
-                    {
-                        "index": index,
-                        "stem": question["stem"],
-                        "selected": selected,
-                        "correct": question["correct"],
-                    }
-                )
-        st.session_state[result_key] = {"score": score, "wrong_items": wrong_items}
+            result_items.append(
+                {
+                    "index": display_index,
+                    "display_index": display_index,
+                    "original_index": original_index,
+                    "stem": question["stem"],
+                    "selected": selected,
+                    "correct": question["correct"],
+                    "analysis": question.get("analysis", ""),
+                    "is_correct": is_correct,
+                }
+            )
+        st.session_state[result_key] = {"score": score, "items": result_items, "source_indexes": sample_indexes}
         st.rerun()
 
 
 def _render_course(payload: dict[str, Any]) -> None:
+    cid = course_id(payload)
+    _consume_flow_action(cid)
+    active_stage = _current_course_stage(cid)
     st.markdown(
         f'<section class="course-title-card"><h1>{html.escape(str(payload["title"]))}</h1></section>',
         unsafe_allow_html=True,
     )
-    tab_show, tab_fill, tab_practice = st.tabs(["知识展示", "知识填空", "快速练习"])
-    with tab_show:
+    if st.button("重新上传资料", key=f"reset_upload_{cid}"):
+        _reset_course_state(clear_upload_signature=True, reset_uploader=True)
+        st.rerun()
+    st.markdown(_step_indicator_html(active_stage), unsafe_allow_html=True)
+
+    if active_stage == COURSE_STAGE_SHOW:
         with st.container(border=True):
             st.markdown('<div class="section-kicker">知识展示</div>', unsafe_allow_html=True)
             st.markdown(
                 knowledge_html(payload["knowledge_paragraphs"], payload["blanks"], payload.get("knowledge_images", [])),
                 unsafe_allow_html=True,
             )
-    with tab_fill:
+        if st.button("进入知识填空", type="primary", key=f"enter_fill_{cid}"):
+            _set_course_stage(cid, COURSE_STAGE_FILL)
+            st.rerun()
+        return
+
+    if active_stage == COURSE_STAGE_FILL:
         with st.container(border=True):
             st.markdown('<div class="section-kicker">选词填空</div>', unsafe_allow_html=True)
             _render_fill_tab(payload)
-    with tab_practice:
+        if st.button("重新记忆", key=f"restart_memory_{cid}"):
+            _clear_fill_progress(cid)
+            _set_course_stage(cid, COURSE_STAGE_SHOW)
+            st.rerun()
+        return
+
+    if active_stage == COURSE_STAGE_PRACTICE:
         with st.container(border=True):
             st.markdown('<div class="section-kicker">快速练习</div>', unsafe_allow_html=True)
             _render_practice_tab(payload)
@@ -517,6 +822,9 @@ def main() -> None:
     st.markdown(APP_CSS, unsafe_allow_html=True)
 
     active_payload = st.session_state.get("course_payload")
+    if active_payload is not None and _payload_needs_reparse(active_payload):
+        _reset_course_state(clear_upload_signature=True, reset_uploader=True)
+        st.rerun()
     if active_payload is not None:
         _render_course(active_payload)
         return
@@ -528,23 +836,31 @@ def main() -> None:
     )
 
     with st.container(border=True):
-        uploaded = st.file_uploader("上传成品背记资料 Word", type=["docx"], accept_multiple_files=False)
-    if uploaded is None:
+        uploaded = st.file_uploader("上传成品背记资料 Word", type=["docx"], accept_multiple_files=False, key=_upload_widget_key())
+    parsed_payload = st.session_state.get("parsed_payload")
+    if parsed_payload is not None and _payload_needs_reparse(parsed_payload):
+        st.session_state.pop("parsed_payload", None)
+        parsed_payload = None
+        st.session_state.pop("uploaded_signature", None)
+
+    if uploaded is None and parsed_payload is None:
         st.info("请先上传 `.docx` 成品背记资料。")
         return
 
-    file_bytes = uploaded.getvalue()
-    upload_signature = hashlib.sha256(uploaded.name.encode("utf-8") + file_bytes).hexdigest()
-    if st.session_state.get("uploaded_signature") != upload_signature:
-        st.session_state["uploaded_signature"] = upload_signature
-        _reset_course_state()
-
-    try:
-        with st.spinner("正在识别成品背记资料结构..."):
-            parsed_payload = _parse_from_upload(uploaded.name, file_bytes)
-    except Exception as exc:
-        st.error(f"无法识别这个 Word 文件：{exc}")
-        return
+    if uploaded is not None:
+        file_bytes = uploaded.getvalue()
+        upload_signature = hashlib.sha256(uploaded.name.encode("utf-8") + file_bytes).hexdigest()
+        if st.session_state.get("uploaded_signature") != upload_signature or parsed_payload is None:
+            _reset_course_state()
+            try:
+                with st.spinner("正在识别成品背记资料结构..."):
+                    parsed_payload = _parse_from_upload(uploaded.name, file_bytes, PARSER_SCHEMA_VERSION)
+            except Exception as exc:
+                st.error(f"无法识别这个 Word 文件：{exc}")
+                return
+            st.session_state["uploaded_signature"] = upload_signature
+            st.session_state["parsed_payload"] = parsed_payload
+            st.rerun()
 
     all_images = _all_course_images(parsed_payload)
     unsupported_images = [image for image in all_images if not image.get("renderable")]
@@ -563,11 +879,29 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     if st.button("生成填空干扰项并开始学习", type="primary"):
+        progress_bar = st.progress(0.0)
+        status_slot = st.empty()
+
+        def _progress_update(event: dict[str, Any]) -> None:
+            batches = max(1, int(event.get("batches", 1)))
+            batch = max(1, int(event.get("batch", 1)))
+            attempt = max(1, int(event.get("attempt", 1)))
+            pending = max(0, int(event.get("pending", 0)))
+            attempt_fraction = 0.0 if attempt == 1 else 0.45
+            progress = min(0.98, max(0.02, ((batch - 1) + attempt_fraction) / batches))
+            progress_bar.progress(progress)
+            status_slot.info(f"正在生成第 {batch}/{batches} 批，第 {attempt} 次尝试，待处理 {pending} 项...")
+
         try:
-            with st.spinner("正在补齐填空干扰项..."):
-                payload = generate_blank_distractors(parsed_payload, config)
+            status_slot.info("正在准备 DeepSeek 高质量干扰项生成...")
+            payload = _tag_parser_schema(generate_blank_distractors(parsed_payload, config, progress_callback=_progress_update))
+            progress_bar.progress(1.0)
+            status_slot.success("干扰项生成完成，正在进入学习页...")
             st.session_state["course_payload"] = payload
-            st.session_state.pop(f"practice_result_{course_id(payload)}", None)
+            generated_cid = course_id(payload)
+            _clear_practice_state(generated_cid)
+            _clear_fill_progress(generated_cid)
+            _set_course_stage(generated_cid, COURSE_STAGE_SHOW)
             st.rerun()
         except Exception as exc:
             st.error(f"生成填空干扰项失败：{exc}")

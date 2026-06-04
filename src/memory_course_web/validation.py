@@ -193,10 +193,12 @@ def validate_finished_course_payload(payload: dict[str, Any]) -> dict[str, Any]:
         wrong = validate_distractor_list(correct, question.get("wrong"), f"第 {index} 题错误选项")
         normalized_questions.append(
             {
-                "category": clean_text(question.get("category", "快速练习"), f"第 {index} 题分类"),
+                "category": optional_text(question.get("category"), f"第 {index} 题分类"),
                 "stem": stem,
                 "correct": correct,
                 "wrong": wrong,
+                "source": optional_text(question.get("source"), f"第 {index} 题来源"),
+                "analysis": optional_text(question.get("analysis"), f"第 {index} 题解析"),
                 "images": _normalize_images(question.get("images", []), f"第 {index} 题配图"),
             }
         )

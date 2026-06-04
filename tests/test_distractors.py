@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from src.memory_course_web.distractors import fallback_distractors_for_blank
+from src.memory_course_web import generation
 from src.memory_course_web.generation import DeepSeekConfig, generate_blank_distractors
 from src.memory_course_web.rendering import build_word_bank, fill_interaction_html, fill_sheet_html, image_group_html, knowledge_html, word_bank_html
 from src.memory_course_web.validation import validate_distractor_list, validate_finished_course_payload
@@ -19,6 +22,58 @@ def sample_payload():
             {"category": "基础辨析", "stem": "alpha 对应哪个选项？", "correct": "A", "wrong": ["B", "C", "D"]}
         ],
     }
+
+
+def three_blank_payload():
+    return {
+        "title": "测试课程",
+        "knowledge_paragraphs": ["alpha beta gamma"],
+        "blanks": [
+            {"id": "b001", "answer": "alpha", "paragraph_index": 0, "start": 0, "end": 5, "distractors": [], "distractor_source": ""},
+            {"id": "b002", "answer": "beta", "paragraph_index": 0, "start": 6, "end": 10, "distractors": [], "distractor_source": ""},
+            {"id": "b003", "answer": "gamma", "paragraph_index": 0, "start": 11, "end": 16, "distractors": [], "distractor_source": ""},
+        ],
+        "quick_practice": [
+            {"category": "基础辨析", "stem": "alpha 对应哪个选项？", "correct": "A", "wrong": ["B", "C", "D"]}
+        ],
+    }
+
+
+def install_fake_openai(monkeypatch, responses):
+    calls = []
+    response_queue = list(responses)
+
+    class FakeMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class FakeChoice:
+        def __init__(self, content):
+            self.message = FakeMessage(content)
+
+    class FakeResponse:
+        def __init__(self, content):
+            self.choices = [FakeChoice(content)]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if not response_queue:
+                raise AssertionError("unexpected DeepSeek call")
+            response = response_queue.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return FakeResponse(response)
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key, base_url, timeout):
+            self.api_key = api_key
+            self.base_url = base_url
+            self.timeout = timeout
+            self.chat = type("FakeChat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(generation, "OpenAI", FakeOpenAI)
+    return calls
 
 
 def test_validate_distractor_list_rejects_answer_duplicate():
@@ -67,6 +122,73 @@ def test_no_api_key_uses_one_code_fallback_for_each_blank():
     assert not answer_keys & distractor_keys
     assert len(distractor_keys) == len(payload["blanks"])
     assert not any(item.startswith("干扰项") for item in distractor_keys)
+
+
+def test_deepseek_partial_batch_keeps_valid_items_and_only_fallbacks_missing(monkeypatch):
+    calls = install_fake_openai(
+        monkeypatch,
+        [
+            '{"items":[{"id":"b001","distractor":"delta"}]}',
+            '{"items":[{"id":"b002","distractor":"theta"}]}',
+        ],
+    )
+
+    payload = generate_blank_distractors(three_blank_payload(), DeepSeekConfig(api_key="key"), batch_size=3)
+
+    assert [blank["distractor_source"] for blank in payload["blanks"]] == ["DeepSeek", "DeepSeek重试", "代码兜底"]
+    assert payload["blanks"][0]["distractors"] == ["delta"]
+    assert payload["blanks"][1]["distractors"] == ["theta"]
+    assert payload["distractor_summary"] == {"DeepSeek": 1, "DeepSeek重试": 1, "代码兜底": 1}
+    assert payload["distractor_diagnostics"]["failure_summary"]["缺项"] == 3
+    assert calls[0]["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert calls[0]["reasoning_effort"] == "high"
+
+
+def test_deepseek_empty_first_attempt_then_retry_success_marks_retry(monkeypatch):
+    install_fake_openai(
+        monkeypatch,
+        [
+            "",
+            '{"items":[{"id":"b001","distractor":"delta"},{"id":"b002","distractor":"theta"}]}',
+        ],
+    )
+    progress_events = []
+
+    payload = generate_blank_distractors(
+        sample_payload(),
+        DeepSeekConfig(api_key="key"),
+        progress_callback=progress_events.append,
+    )
+
+    assert {blank["distractor_source"] for blank in payload["blanks"]} == {"DeepSeek重试"}
+    assert payload["distractor_summary"] == {"DeepSeek重试": 2}
+    assert payload["distractor_diagnostics"]["failure_summary"]["空返回"] == 1
+    assert [event["attempt"] for event in progress_events] == [1, 2]
+
+
+def test_deepseek_invalid_placeholder_after_retries_uses_code_fallback(monkeypatch):
+    install_fake_openai(
+        monkeypatch,
+        [
+            '{"items":[{"id":"b001","distractor":"干扰项23"}]}',
+            '{"items":[{"id":"b001","distractor":"干扰项24"}]}',
+        ],
+    )
+    payload = {
+        "title": "测试课程",
+        "knowledge_paragraphs": ["圆心角"],
+        "blanks": [
+            {"id": "b001", "answer": "圆心角", "paragraph_index": 0, "start": 0, "end": 3, "distractors": [], "distractor_source": ""}
+        ],
+        "quick_practice": [{"category": "基础辨析", "stem": "圆心角是什么？", "correct": "A", "wrong": ["B", "C", "D"]}],
+    }
+
+    result = generate_blank_distractors(payload, DeepSeekConfig(api_key="key"))
+
+    assert result["blanks"][0]["distractor_source"] == "代码兜底"
+    assert result["blanks"][0]["distractors"][0] != "干扰项23"
+    assert not result["blanks"][0]["distractors"][0].startswith("干扰项")
+    assert result["distractor_diagnostics"]["failure_summary"]["无效项"] == 2
 
 
 def test_word_bank_replaces_existing_placeholder_distractor():
@@ -324,3 +446,94 @@ def test_fill_interaction_html_contains_drag_click_and_check_controls():
     assert "共 " not in html
     assert "word-bank-title" in html
     assert "fill-sheet" in html
+    assert ".word-blank.filled .word-blank-number" in html
+    assert "gap: .82rem" in html
+    assert html.index('id="goNextPage"') < html.index('id="resetAnswers"')
+    assert html.index('id="enterPractice"') < html.index('id="resetAnswers"')
+
+
+def test_fill_interaction_html_paginates_numbered_sections():
+    paragraphs = ["1", "alpha", "2", "beta"]
+    blanks = [
+        {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5, "distractors": ["delta"]},
+        {"id": "b002", "answer": "beta", "paragraph_index": 3, "start": 0, "end": 4, "distractors": ["theta"]},
+    ]
+    word_bank = build_word_bank(blanks, "paged")
+
+    html = fill_interaction_html(paragraphs, blanks, [], word_bank, course_cid="course123")
+
+    assert 'class="fill-page active"' in html
+    assert 'class="fill-page"' in html
+    assert 'data-page-target="0"' in html
+    assert 'data-page-target="1"' in html
+    assert "‹ 上一页" not in html
+    assert "下一页 ›" not in html
+    assert "data-page-prev" not in html
+    assert "data-page-next" not in html
+    assert "button.addEventListener(\"click\", () => showPage(Number(button.dataset.pageTarget" not in html
+    assert 'id="goNextPage"' in html
+    assert 'id="enterPractice"' in html
+    assert 'target="_top"' not in html
+    assert "flow_action" not in html
+    assert "notifyPracticeReady" in html
+    assert "requestFillResize" in html
+    assert "window.__fillWidgetApi" in html
+    assert "restoreState(window.__fillSavedState)" in html
+    assert "window.parent.location" not in html
+    assert "accuracy >= 0.6" in html
+    assert "本页正确率" in html
+
+
+def test_fill_component_restores_state_without_global_mutation_observer():
+    component_html = Path("src/memory_course_web/fill_component/index.html").read_text(encoding="utf-8")
+
+    assert "collectFillState" in component_html
+    assert "restoreFillState" in component_html
+    assert "window.__fillWidgetApi.collectState" in component_html
+    assert "window.__fillSavedState = previousState" in component_html
+    assert "MutationObserver" not in component_html
+
+
+def test_fill_interaction_html_page_word_banks_only_include_page_options():
+    paragraphs = ["1", "alpha", "2", "beta"]
+    blanks = [
+        {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5, "distractors": ["delta"]},
+        {"id": "b002", "answer": "beta", "paragraph_index": 3, "start": 0, "end": 4, "distractors": ["theta"]},
+    ]
+    word_bank = build_word_bank(blanks, "paged-bank")
+
+    html = fill_interaction_html(paragraphs, blanks, [], word_bank)
+
+    first_bank_start = html.index('class="word-bank-page active"')
+    second_bank_start = html.index('class="word-bank-page"', first_bank_start + 1)
+    first_bank = html[first_bank_start:second_bank_start]
+    second_bank = html[second_bank_start:]
+    assert "alpha" in first_bank
+    assert "delta" in first_bank
+    assert "beta" not in first_bank
+    assert "theta" not in first_bank
+    assert "beta" in second_bank
+    assert "theta" in second_bank
+
+
+def test_fill_interaction_html_paginates_knowledge_item_sections():
+    paragraphs = ["知识小题1.物质构成", "alpha", "知识小题2.分子热运动", "beta"]
+    blanks = [
+        {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5, "distractors": ["delta"]},
+        {"id": "b002", "answer": "beta", "paragraph_index": 3, "start": 0, "end": 4, "distractors": ["theta"]},
+    ]
+    word_bank = build_word_bank(blanks, "physics-paged-bank")
+
+    html = fill_interaction_html(paragraphs, blanks, [], word_bank)
+
+    assert 'data-page-target="0"' in html
+    assert 'data-page-target="1"' in html
+    first_page_start = html.index('class="fill-page active"')
+    second_page_start = html.index('class="fill-page"', first_page_start + 1)
+    first_page = html[first_page_start:second_page_start]
+    second_page = html[second_page_start:]
+    assert "知识小题1.物质构成" in first_page
+    assert "alpha" in first_page
+    assert "知识小题2.分子热运动" not in first_page
+    assert "知识小题2.分子热运动" in second_page
+    assert "beta" in second_page

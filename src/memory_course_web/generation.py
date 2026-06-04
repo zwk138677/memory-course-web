@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from dataclasses import dataclass
 import json
-from typing import Any
+import time
+from typing import Any, Callable
 
 from openai import OpenAI
 
@@ -20,6 +22,12 @@ class DeepSeekConfig:
     model: str = "deepseek-v4-pro"
     max_tokens: int = 6000
     temperature: float = 0.2
+    timeout_seconds: float = 60.0
+    thinking: str = "enabled"
+    reasoning_effort: str = "high"
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 SYSTEM_PROMPT = """你是一名严谨的初中数学教研老师。你只输出合法 JSON，不输出 Markdown。
@@ -65,6 +73,52 @@ def _parse_json(content: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise PayloadValidationError("DeepSeek 返回 JSON 顶层必须是对象。")
     return parsed
+
+
+def _new_diagnostics(total_blanks: int, batch_size: int) -> dict[str, Any]:
+    return {
+        "total_blanks": total_blanks,
+        "batch_size": batch_size,
+        "batches": 0,
+        "elapsed_seconds": 0.0,
+        "failures": [],
+        "failure_summary": {},
+    }
+
+
+def _failure_category(reason: str) -> str:
+    if "空内容" in reason:
+        return "空返回"
+    if "缺少" in reason:
+        return "缺项"
+    if "无效" in reason or "占位符" in reason or "重复" in reason:
+        return "无效项"
+    if "JSON" in reason:
+        return "格式错误"
+    if "未配置" in reason:
+        return "未配置"
+    return "请求失败"
+
+
+def _add_failure(
+    diagnostics: dict[str, Any],
+    *,
+    batch_number: int,
+    attempt: int,
+    reason: str,
+    count: int = 1,
+) -> None:
+    diagnostics["failures"].append(
+        {
+            "batch": batch_number,
+            "attempt": attempt,
+            "reason": reason,
+            "count": count,
+        }
+    )
+    category = _failure_category(reason)
+    summary = diagnostics.setdefault("failure_summary", {})
+    summary[category] = int(summary.get(category, 0)) + count
 
 
 def _answer_keys(payload: dict[str, Any]) -> set[str]:
@@ -119,6 +173,8 @@ def _generate_batch(
         response_format={"type": "json_object"},
         temperature=config.temperature,
         max_tokens=config.max_tokens,
+        reasoning_effort=config.reasoning_effort,
+        extra_body={"thinking": {"type": config.thinking}},
     )
     content = response.choices[0].message.content or ""
     if not content.strip():
@@ -141,10 +197,6 @@ def _generate_batch(
         if value is None and isinstance(item.get("distractors"), list) and item["distractors"]:
             value = item["distractors"][0]
         result[item_id] = str(value or "").strip()
-
-    missing = [blank["id"] for blank in blanks if blank["id"] not in result]
-    if missing:
-        raise PayloadValidationError(f"DeepSeek 返回缺少填空项：{', '.join(missing)}")
     return result
 
 
@@ -158,49 +210,129 @@ def generate_blank_distractors(
     payload: dict[str, Any],
     config: DeepSeekConfig,
     *,
-    batch_size: int = 20,
+    batch_size: int = 8,
+    max_attempts: int = 2,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Attach one globally valid word-bank distractor to each parsed blank."""
 
+    started_at = time.perf_counter()
     result = validate_finished_course_payload(deepcopy(payload))
     blanks = result.get("blanks", [])
+    diagnostics = _new_diagnostics(len(blanks), max(1, batch_size))
     if not blanks:
         result["distractor_summary"] = {}
+        result["distractor_diagnostics"] = diagnostics
         return result
 
     answer_keys = _answer_keys(result)
     used_distractors: set[str] = set()
 
     if not config.api_key:
+        _add_failure(
+            diagnostics,
+            batch_number=0,
+            attempt=0,
+            reason="未配置 DeepSeek Key，全部使用代码兜底。",
+            count=len(blanks),
+        )
         for index, blank in enumerate(blanks, start=1):
             distractor = _fallback_candidate(blank, result, answer_keys, used_distractors, index)
             _set_blank_distractor(blank, distractor, "代码兜底", used_distractors)
         result["distractor_summary"] = {"代码兜底": len(blanks)}
+        diagnostics["elapsed_seconds"] = round(time.perf_counter() - started_at, 2)
+        result["distractor_diagnostics"] = diagnostics
         return validate_finished_course_payload(result)
 
-    client = OpenAI(api_key=config.api_key, base_url=config.base_url)
-    for batch in _chunked(blanks, max(1, batch_size)):
-        try:
-            generated = _generate_batch(payload=result, blanks=batch, client=client, config=config)
-        except Exception:
-            generated = {}
+    batches = _chunked(blanks, max(1, batch_size))
+    diagnostics["batches"] = len(batches)
+    client = OpenAI(api_key=config.api_key, base_url=config.base_url, timeout=config.timeout_seconds)
 
-        for index, blank in enumerate(batch, start=1):
-            source = "DeepSeek"
-            distractor = _valid_single_distractor(
-                generated.get(blank["id"], ""),
-                str(blank["answer"]),
-                answer_keys,
-                used_distractors,
+    for batch_number, batch in enumerate(batches, start=1):
+        unresolved = list(batch)
+        for attempt in range(1, max(1, max_attempts) + 1):
+            if not unresolved:
+                break
+            if progress_callback:
+                progress_callback(
+                    {
+                        "batch": batch_number,
+                        "batches": len(batches),
+                        "attempt": attempt,
+                        "pending": len(unresolved),
+                        "total_blanks": len(blanks),
+                    }
+                )
+
+            try:
+                generated = _generate_batch(payload=result, blanks=unresolved, client=client, config=config)
+            except Exception as exc:
+                _add_failure(
+                    diagnostics,
+                    batch_number=batch_number,
+                    attempt=attempt,
+                    reason=str(exc) or type(exc).__name__,
+                    count=1,
+                )
+                continue
+
+            remaining: list[dict[str, Any]] = []
+            missing_count = 0
+            invalid_count = 0
+            source = "DeepSeek" if attempt == 1 else "DeepSeek重试"
+            for blank in unresolved:
+                if blank["id"] not in generated:
+                    missing_count += 1
+                    remaining.append(blank)
+                    continue
+                distractor = _valid_single_distractor(
+                    generated.get(blank["id"], ""),
+                    str(blank["answer"]),
+                    answer_keys,
+                    used_distractors,
+                )
+                if not distractor:
+                    invalid_count += 1
+                    remaining.append(blank)
+                    continue
+                _set_blank_distractor(blank, distractor, source, used_distractors)
+
+            if missing_count:
+                _add_failure(
+                    diagnostics,
+                    batch_number=batch_number,
+                    attempt=attempt,
+                    reason=f"DeepSeek 返回缺少 {missing_count} 个填空项。",
+                    count=missing_count,
+                )
+            if invalid_count:
+                _add_failure(
+                    diagnostics,
+                    batch_number=batch_number,
+                    attempt=attempt,
+                    reason=f"DeepSeek 返回 {invalid_count} 个无效干扰项。",
+                    count=invalid_count,
+                )
+            unresolved = remaining
+
+        for index, blank in enumerate(unresolved, start=1):
+            distractor = _fallback_candidate(blank, result, answer_keys, used_distractors, len(used_distractors) + index)
+            _set_blank_distractor(blank, distractor, "代码兜底", used_distractors)
+            _add_failure(
+                diagnostics,
+                batch_number=batch_number,
+                attempt=max(1, max_attempts),
+                reason="两次 DeepSeek 尝试后仍无有效结果，使用代码兜底。",
+                count=1,
             )
-            if not distractor:
-                distractor = _fallback_candidate(blank, result, answer_keys, used_distractors, len(used_distractors) + index)
-                source = "代码兜底"
-            _set_blank_distractor(blank, distractor, source, used_distractors)
 
-    summary: dict[str, int] = {}
+    summary: dict[str, int] = dict(Counter(blank.get("distractor_source") or "未知" for blank in blanks))
     for blank in blanks:
-        source = blank.get("distractor_source") or "未知"
-        summary[source] = summary.get(source, 0) + 1
+        if not blank.get("distractors"):
+            distractor = _fallback_candidate(blank, result, answer_keys, used_distractors, len(used_distractors) + 1)
+            _set_blank_distractor(blank, distractor, "代码兜底", used_distractors)
+    summary = dict(Counter(blank.get("distractor_source") or "未知" for blank in blanks))
     result["distractor_summary"] = summary
+    diagnostics["elapsed_seconds"] = round(time.perf_counter() - started_at, 2)
+    result["distractor_diagnostics"] = diagnostics
     return validate_finished_course_payload(result)

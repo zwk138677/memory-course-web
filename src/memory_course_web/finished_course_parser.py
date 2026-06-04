@@ -64,14 +64,19 @@ def q_o(name: str) -> str:
 
 FIRST_PART_MARKERS = ("第一部分：《知识小题》", "第一部分：《知识点》")
 SECOND_PART_MARKERS = ("第二部分：《快速练习》",)
-PRACTICE_TITLE_MARKERS = ("📝 练习题", "练习题")
+PRACTICE_TITLE_MARKERS = ("📝 练习题", "练习题", "— 配套练习题 —")
 CATEGORY_LABELS = ("【基础辨析】", "【易错辨析】", "【简单应用】")
 QUESTION_LABEL = "【题目内容】"
 CORRECT_LABEL = "【正确选项】"
+SOURCE_RE = re.compile(r"^【来源\s*[：:]\s*(知识小题\s*\d+)】\s*$")
+ANALYSIS_RE = re.compile(r"^【解析】\s*[：:]\s*(.*)$")
 WRONG_RE = re.compile(r"^【错误选项\s*([123])】\s*[：:]\s*(.*)$")
 QUESTION_RE = re.compile(r"^【题目内容】\s*[：:]\s*(.*)$")
 CORRECT_RE = re.compile(r"^【正确选项】\s*[：:]\s*(.*)$")
 QUESTION_HEADING_RE = re.compile(r"^【第[一二三四五六七八九十百\d]+题】\s*[：:]?\s*(.*)$")
+PHYSICS_KNOWLEDGE_POINT_RE = re.compile(r"^【知识点\s*\d+】$")
+KNOWLEDGE_ITEM_RE = re.compile(r"^知识小题\s*\d+\s*[.．、]")
+CHINESE_SECTION_RE = re.compile(r"^[一二三四五六七八九十]+[、.．]\s*(.+?)\s*$")
 LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[．.、]\s*")
 
 
@@ -678,6 +683,19 @@ def _is_question_heading(text: str) -> bool:
     return bool(QUESTION_HEADING_RE.match(text.strip()))
 
 
+def _is_physics_knowledge_point(text: str) -> bool:
+    return bool(PHYSICS_KNOWLEDGE_POINT_RE.match(text.strip()))
+
+
+def _is_knowledge_item_heading(text: str) -> bool:
+    return bool(KNOWLEDGE_ITEM_RE.match(text.strip()))
+
+
+def _physics_section_title(text: str) -> str:
+    match = CHINESE_SECTION_RE.match(text.strip())
+    return match.group(1).strip() if match else ""
+
+
 def _is_category_label(text: str) -> bool:
     return text.strip() in CATEGORY_LABELS
 
@@ -722,6 +740,16 @@ def _strip_correct(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _strip_source(text: str) -> str:
+    match = SOURCE_RE.match(text.strip())
+    return re.sub(r"\s+", "", match.group(1)) if match else ""
+
+
+def _strip_analysis(text: str) -> str:
+    match = ANALYSIS_RE.match(text.strip())
+    return match.group(1).strip() if match else ""
+
+
 def _category_for(index: int) -> str:
     if index <= 6:
         return "基础辨析"
@@ -734,6 +762,7 @@ def _parse_questions(paragraphs: list[ParsedParagraph], start_index: int) -> lis
     questions: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     current_category = ""
+    saw_category_label = False
 
     for paragraph in paragraphs[start_index:]:
         text = paragraph.text.strip()
@@ -747,6 +776,7 @@ def _parse_questions(paragraphs: list[ParsedParagraph], start_index: int) -> lis
 
         if _is_category_label(text):
             current_category = text.strip("【】")
+            saw_category_label = True
             continue
 
         if _is_question_heading(text):
@@ -782,10 +812,14 @@ def _parse_questions(paragraphs: list[ParsedParagraph], start_index: int) -> lis
             current["stem"] = text
             continue
 
-        if text.startswith("【") and not text.startswith((CORRECT_LABEL, "【错误选项")):
-            if current is not None and (current.get("stem") or current.get("correct") or current.get("wrong")):
-                questions.append(current)
-            current = None
+        source = _strip_source(text)
+        if source:
+            current["source"] = source
+            continue
+
+        analysis = _strip_analysis(text)
+        if analysis:
+            current["analysis"] = analysis
             continue
 
         correct = _strip_correct(text)
@@ -796,6 +830,12 @@ def _parse_questions(paragraphs: list[ParsedParagraph], start_index: int) -> lis
         wrong_match = WRONG_RE.match(text)
         if wrong_match:
             current["wrong"].append(wrong_match.group(2).strip())
+            continue
+
+        if text.startswith("【") and not text.startswith((CORRECT_LABEL, "【错误选项")):
+            if current is not None and (current.get("stem") or current.get("correct") or current.get("wrong")):
+                questions.append(current)
+            current = None
 
     if current is not None:
         questions.append(current)
@@ -807,12 +847,19 @@ def _parse_questions(paragraphs: list[ParsedParagraph], start_index: int) -> lis
         wrong = [str(item).strip() for item in question.get("wrong", []) if str(item).strip()]
         if not stem or not correct or len(wrong) != 3:
             continue
+        source = str(question.get("source", "")).strip()
+        analysis = str(question.get("analysis", "")).strip()
+        category = str(question.get("category") or "").strip()
+        if not category and not source and not analysis and not saw_category_label:
+            category = _category_for(index)
         normalized.append(
             {
-                "category": str(question.get("category") or _category_for(index)),
+                "category": category,
                 "stem": stem,
                 "correct": correct,
                 "wrong": wrong[:3],
+                "source": source,
+                "analysis": analysis,
                 "images": list(question.get("images", [])),
             }
         )
@@ -872,12 +919,37 @@ def parse_finished_course(docx_path: Path | str) -> FinishedCourse:
     if first_practice_index is None:
         raise ValueError("没有识别到快速练习区域。")
 
+    first_knowledge_item_index = next(
+        (
+            index
+            for index, paragraph in enumerate(paragraphs[:first_practice_index])
+            if index > 0 and _is_knowledge_item_heading(paragraph.text)
+        ),
+        None,
+    )
+
     if first_marker_index is not None:
         title = _clean_title_from_filename(path)
         knowledge_start = first_marker_index + 1
         knowledge_end = second_marker_index if second_marker_index is not None else first_practice_index
         question_start = second_marker_index if second_marker_index is not None else first_practice_index
         structure = "two_part_course"
+    elif (
+        len(paragraphs) > 1
+        and _is_physics_knowledge_point(paragraphs[0].text)
+        and _physics_section_title(paragraphs[1].text)
+    ):
+        title = _physics_section_title(paragraphs[1].text)
+        knowledge_start = 2
+        knowledge_end = first_practice_index
+        question_start = first_practice_index
+        structure = "physics_course"
+    elif first_knowledge_item_index is not None and paragraphs[0].text.strip():
+        title = paragraphs[0].text.strip()
+        knowledge_start = first_knowledge_item_index
+        knowledge_end = first_practice_index
+        question_start = first_practice_index
+        structure = "physics_reference_course"
     else:
         first_text = paragraphs[0].text.strip()
         title = first_text if not _is_question_line(first_text) else _clean_title_from_filename(path)
