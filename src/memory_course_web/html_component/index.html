@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/app/static/katex/katex.min.css">
+  <script defer src="/app/static/katex/katex.min.js"></script>
+  <script defer src="/app/static/katex/auto-render.min.js"></script>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      overflow: hidden;
+    }
+    .katex {
+      font-size: 1.08em;
+      line-height: 1.08;
+      vertical-align: -0.06em;
+    }
+    .katex-display {
+      margin: .65em 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .katex-display > .katex {
+      vertical-align: 0;
+    }
+    .knowledge-body p {
+      font-family: "Microsoft YaHei", "SimSun", sans-serif;
+      font-size: 1rem;
+      line-height: 2.08;
+      margin: 0 0 .82rem;
+      color: #2f261a;
+    }
+    .answer-mark {
+      border-bottom: 1.5px solid #bd7615;
+      background: #fff0bf;
+      color: #4a3514;
+      padding: 0 .18rem .02rem;
+      border-radius: 3px 3px 0 0;
+    }
+    .course-images {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .9rem;
+      margin: .6rem 0 1.1rem;
+    }
+    .course-image-wrap {
+      margin: 0;
+    }
+    .course-image {
+      display: block;
+      max-height: 420px;
+      object-fit: contain;
+      border: 1px solid #e4c78b;
+      border-radius: 8px;
+      background: #fffdf8;
+      padding: .5rem;
+      box-shadow: 0 9px 20px rgba(111, 78, 32, .075);
+    }
+    .course-image-placeholder {
+      border: 1px dashed #c7a566;
+      border-radius: 8px;
+      background: #fffaf0;
+      color: #735f43;
+      padding: .75rem .9rem;
+      font-size: .92rem;
+    }
+    .course-image-placeholder span {
+      color: #8a7657;
+      font-size: .84rem;
+    }
+    .inline-formula {
+      display: inline-block;
+      height: 1.45em;
+      max-width: 10em;
+      margin: 0 .08rem;
+      vertical-align: -0.35em;
+      object-fit: contain;
+    }
+    .inline-formula-text {
+      display: inline;
+      margin: 0 .08rem;
+      font-family: "Times New Roman", "Cambria Math", serif;
+      font-size: 1em;
+      color: #3f2a0b;
+      white-space: nowrap;
+    }
+    .inline-formula-frac {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      margin: 0 .08em;
+      vertical-align: middle;
+      transform: translateY(-0.06em);
+      line-height: .95;
+      font-size: .82em;
+    }
+    .inline-formula-frac .frac-top {
+      display: block;
+      border-bottom: 1px solid currentColor;
+      padding: 0 .16em .035em;
+    }
+    .inline-formula-frac .frac-bottom {
+      display: block;
+      padding: .035em .16em 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const Streamlit = {
+      setComponentReady() {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+          "*"
+        );
+      },
+      setFrameHeight(height) {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height },
+          "*"
+        );
+      },
+      setComponentValue(value) {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setComponentValue", value },
+          "*"
+        );
+      },
+    };
+
+    let lastHeight = 0;
+
+    function resizeToContent() {
+      const root = document.getElementById("root");
+      const height = Math.max(
+        120,
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+        root ? root.scrollHeight : 0
+      );
+      if (Math.abs(height - lastHeight) < 3) {
+        return;
+      }
+      lastHeight = height;
+      Streamlit.setFrameHeight(height);
+    }
+
+    function executeInlineScripts(container) {
+      const scripts = Array.from(container.querySelectorAll("script"));
+      scripts.forEach(oldScript => {
+        const newScript = document.createElement("script");
+        Array.from(oldScript.attributes).forEach(attr => {
+          newScript.setAttribute(attr.name, attr.value);
+        });
+        newScript.text = oldScript.textContent || "";
+        oldScript.replaceWith(newScript);
+      });
+    }
+
+    function renderLatexInElement(element) {
+      if (!element || typeof window.renderMathInElement !== "function") {
+        return;
+      }
+      try {
+        window.renderMathInElement(element, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "\\(", right: "\\)", display: false },
+            { left: "$", right: "$", display: false },
+          ],
+          throwOnError: true,
+          strict: "ignore",
+          errorCallback() {},
+        });
+      } catch (error) {
+        // Invalid LaTeX should not interrupt the page.
+      }
+    }
+
+    function renderLatexWhenReady(element) {
+      const attempt = () => {
+        renderLatexInElement(element);
+        resizeToContent();
+      };
+      attempt();
+      window.setTimeout(attempt, 120);
+      window.setTimeout(attempt, 500);
+    }
+
+    function render(event) {
+      const args = event.data && event.data.args ? event.data.args : {};
+      const root = document.getElementById("root");
+      root.innerHTML = args.html || "";
+      executeInlineScripts(root);
+      renderLatexWhenReady(root);
+      requestAnimationFrame(resizeToContent);
+    }
+
+    window.addEventListener("resize", resizeToContent);
+    window.addEventListener("message", event => {
+      if (event.data && event.data.type === "streamlit:render") {
+        render(event);
+      }
+    });
+    Streamlit.setComponentReady();
+  </script>
+</body>
+</html>

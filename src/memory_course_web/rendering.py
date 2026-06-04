@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import random
 import re
 from typing import Any
@@ -124,15 +125,15 @@ def _apply_marks(paragraph: str, marks: list[dict[str, Any]], *, blank_current: 
     for start, end, _mark in _spans_for_marks(paragraph, marks):
         if start < used_until:
             continue
-        safe_parts.append(html.escape(paragraph[cursor:start]))
-        answer = html.escape(paragraph[start:end])
+        safe_parts.append(_text_with_latex_and_fractions_html(paragraph[cursor:start]))
+        answer = _text_with_latex_and_fractions_html(paragraph[start:end])
         if blank_current:
             safe_parts.append(f'<span class="blank-slot">{BLANK_SLOT_PLACEHOLDER}</span>')
         else:
             safe_parts.append(f'<span class="answer-mark">{answer}</span>')
         cursor = end
         used_until = end
-    safe_parts.append(html.escape(paragraph[cursor:]))
+    safe_parts.append(_text_with_latex_and_fractions_html(paragraph[cursor:]))
     return "".join(safe_parts)
 
 
@@ -147,7 +148,7 @@ def _apply_blank_slots(paragraph: str, marks: list[dict[str, Any]], blank_number
         blank_number = blank_numbers.get(blank_id, len(blank_numbers) + 1)
         answer = html.escape(paragraph[start:end], quote=True)
         label = html.escape(f"第 {blank_number} 空", quote=True)
-        safe_parts.append(html.escape(paragraph[cursor:start]))
+        safe_parts.append(_text_with_latex_and_fractions_html(paragraph[cursor:start]))
         safe_parts.append(
             f'<span class="word-blank word-blank-drop" role="button" tabindex="0" '
             f'data-blank-id="{html.escape(blank_id, quote=True)}" data-answer="{answer}" title="{label}">'
@@ -158,7 +159,7 @@ def _apply_blank_slots(paragraph: str, marks: list[dict[str, Any]], blank_number
         )
         cursor = end
         used_until = end
-    safe_parts.append(html.escape(paragraph[cursor:]))
+    safe_parts.append(_text_with_latex_and_fractions_html(paragraph[cursor:]))
     return "".join(safe_parts)
 
 
@@ -192,6 +193,7 @@ def _inline_formula_text_html(formula_text: str) -> str:
 
 
 _SIMPLE_TEXT_FRACTION_RE = re.compile(r"(?<![0-9A-Za-z/])([0-9A-Za-z]+)\s*/\s*([0-9A-Za-z]+)(?![0-9A-Za-z/])")
+_LATEX_DELIMITERS = (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$"))
 
 
 def _plain_text_with_fractions_html(text: str) -> str:
@@ -212,6 +214,43 @@ def _plain_text_with_fractions_html(text: str) -> str:
         )
         cursor = match.end()
     parts.append(html.escape(text[cursor:]))
+    return "".join(parts)
+
+
+def _split_latex_segments(text: str) -> list[tuple[bool, str]]:
+    segments: list[tuple[bool, str]] = []
+    cursor = 0
+    plain_start = 0
+    while cursor < len(text):
+        matched = False
+        for left, right in _LATEX_DELIMITERS:
+            if not text.startswith(left, cursor):
+                continue
+            end = text.find(right, cursor + len(left))
+            if end < 0:
+                continue
+            if plain_start < cursor:
+                segments.append((False, text[plain_start:cursor]))
+            end += len(right)
+            segments.append((True, text[cursor:end]))
+            cursor = end
+            plain_start = cursor
+            matched = True
+            break
+        if not matched:
+            cursor += 1
+    if plain_start < len(text):
+        segments.append((False, text[plain_start:]))
+    return segments
+
+
+def _text_with_latex_and_fractions_html(text: str) -> str:
+    parts: list[str] = []
+    for is_latex, segment in _split_latex_segments(text):
+        if is_latex:
+            parts.append(html.escape(segment))
+        else:
+            parts.append(_plain_text_with_fractions_html(segment))
     return "".join(parts)
 
 
@@ -254,10 +293,10 @@ def _render_text_with_marks_and_inline_images(
                 continue
             if position < cursor:
                 continue
-            safe_parts.append(_plain_text_with_fractions_html(paragraph[cursor:position]))
+            safe_parts.append(_text_with_latex_and_fractions_html(paragraph[cursor:position]))
             append_inline_at(position)
             cursor = position
-        safe_parts.append(_plain_text_with_fractions_html(paragraph[cursor:end]))
+        safe_parts.append(_text_with_latex_and_fractions_html(paragraph[cursor:end]))
 
     cursor = 0
     used_until = -1
@@ -265,7 +304,7 @@ def _render_text_with_marks_and_inline_images(
         if start < used_until:
             continue
         append_plain(cursor, start)
-        answer = _plain_text_with_fractions_html(paragraph[start:end])
+        answer = _text_with_latex_and_fractions_html(paragraph[start:end])
         if blank_numbers is None:
             safe_parts.append(f'<span class="answer-mark">{answer}</span>')
         else:
@@ -483,7 +522,7 @@ def word_bank_html(word_bank: list[dict[str, Any]]) -> str:
     items = []
     for option in word_bank:
         number = int(option["number"])
-        text = html.escape(str(option["text"]))
+        text = _text_with_latex_and_fractions_html(str(option["text"]))
         option_id = html.escape(str(option["option_id"]), quote=True)
         source_blank_id = html.escape(str(option.get("source_blank_id", "")), quote=True)
         is_answer = "true" if option.get("is_answer") else "false"
@@ -496,6 +535,387 @@ def word_bank_html(word_bank: list[dict[str, Any]]) -> str:
             "</button>"
         )
     return '<div class="word-bank">' + "\n".join(items) + "</div>"
+
+
+def _safe_script_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
+
+
+def _practice_value_html(value: Any) -> str:
+    text = str(value or "")
+    return _text_with_latex_and_fractions_html(text)
+
+
+def practice_interaction_html(
+    questions: list[dict[str, Any]],
+    *,
+    result_items: list[dict[str, Any]] | None = None,
+    score: int = 0,
+) -> str:
+    if result_items is not None:
+        total = len(result_items)
+        accuracy = round(score / total * 100) if total else 0
+        cards: list[str] = []
+        for item in result_items:
+            display_index = int(item.get("display_index", item.get("index", 0)) or 0)
+            is_correct = bool(item.get("is_correct"))
+            state_class = "is-correct" if is_correct else "is-wrong"
+            status = "正确" if is_correct else "错误"
+            selected = str(item.get("selected") or "未作答")
+            analysis = str(item.get("analysis") or "").strip()
+            analysis_html = (
+                f'<div class="practice-review-analysis"><strong>解析：</strong>{_practice_value_html(analysis)}</div>'
+                if analysis
+                else ""
+            )
+            cards.append(
+                f'<article class="practice-review-item {state_class}">'
+                f'<span class="practice-review-status">{status}</span>'
+                f'<div class="question-stem"><span class="question-number">{display_index}</span>'
+                f'<span>{_practice_value_html(item.get("stem", ""))}</span></div>'
+                f'<div class="practice-review-line"><strong>你的选择：</strong>{_practice_value_html(selected)}</div>'
+                f'<div class="practice-review-line"><strong>正确答案：</strong>{_practice_value_html(item.get("correct", ""))}</div>'
+                f"{analysis_html}"
+                "</article>"
+            )
+        return f"""
+<style>
+  body {{
+    margin: 0;
+    font-family: "Microsoft YaHei", "SimSun", Arial, sans-serif;
+    color: #2f261a;
+    background: transparent;
+  }}
+  .practice-widget {{ padding: 0 1px 18px; }}
+  .practice-result-card {{
+    padding: 1rem 1.12rem;
+    border: 1px solid #e4c78b;
+    border-radius: 8px;
+    background: #fffdf8;
+    box-shadow: 0 10px 22px rgba(111, 78, 32, .075);
+  }}
+  .practice-result-card strong,
+  .practice-result-rate {{ color: #835108; font-weight: 800; }}
+  .practice-result-rate {{
+    display: inline-flex;
+    margin-left: 1.15rem;
+    padding-left: 1.15rem;
+    border-left: 1px solid #e6c98f;
+  }}
+  .practice-review-item {{
+    padding: .85rem .95rem;
+    margin: .75rem 0 0;
+    border: 1px solid #ead7ad;
+    border-left-width: 5px;
+    border-radius: 8px;
+    line-height: 1.75;
+    color: #2f261a;
+  }}
+  .practice-review-item.is-correct {{ border-left-color: #4f9a58; background: #f1fbf0; }}
+  .practice-review-item.is-wrong {{ border-left-color: #bd4a43; background: #fff5f3; }}
+  .practice-review-status {{
+    display: inline-flex;
+    align-items: center;
+    margin: 0 0 .35rem;
+    padding: .12rem .48rem;
+    border-radius: 999px;
+    font-size: .84rem;
+    font-weight: 800;
+  }}
+  .practice-review-item.is-correct .practice-review-status {{ background: #dff2df; color: #27652f; }}
+  .practice-review-item.is-wrong .practice-review-status {{ background: #ffe2dd; color: #8f2c26; }}
+  .question-stem {{
+    display: flex;
+    gap: .65rem;
+    align-items: flex-start;
+    margin-bottom: .55rem;
+    font-size: 1rem;
+    line-height: 1.75;
+    color: #2f261a;
+    font-weight: 700;
+  }}
+  .question-number {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.8rem;
+    height: 1.8rem;
+    margin-top: .05rem;
+    border-radius: 999px;
+    background: #fff0bf;
+    color: #835108;
+    font-size: .9rem;
+    font-weight: 800;
+  }}
+  .practice-review-line,
+  .practice-review-analysis {{ margin-top: .28rem; color: #5e4c31; }}
+</style>
+<div class="practice-widget">
+  <div class="practice-result-card"><strong>快速练习得分：</strong>{score} / {total}<span class="practice-result-rate">正确率：{accuracy}%</span></div>
+  {"".join(cards)}
+</div>
+"""
+
+    if not questions:
+        return """
+<style>
+  body { margin: 0; font-family: "Microsoft YaHei", "SimSun", Arial, sans-serif; color: #2f261a; background: transparent; }
+  .practice-empty { padding: .9rem 1rem; border: 1px solid #e4c78b; border-radius: 8px; background: #fffdf8; color: #735f43; }
+</style>
+<div class="practice-empty">这份资料暂时没有可练习的题目。</div>
+"""
+
+    question_payload: list[dict[str, Any]] = []
+    rendered: list[str] = []
+    current_category = ""
+    for question in questions:
+        display_index = int(question.get("display_index", 0) or 0)
+        category = str(question.get("category") or "").strip()
+        if category and category != current_category:
+            current_category = category
+            rendered.append(f'<div class="practice-group-title">{html.escape(current_category)}</div>')
+        images_html = image_group_html(question.get("images", []))
+        option_html: list[str] = []
+        option_values = list(question.get("options", []))
+        for option_index, option in enumerate(option_values):
+            label = chr(65 + option_index)
+            option_text = str(option)
+            option_html.append(
+                f'<label class="practice-option">'
+                f'<input type="radio" name="q_{display_index}" value="{html.escape(option_text, quote=True)}">'
+                f'<span class="practice-option-label">{label}</span>'
+                f'<span class="practice-option-text">{_practice_value_html(option_text)}</span>'
+                "</label>"
+            )
+        rendered.append(
+            f'<article class="practice-question-card" data-question="{display_index}">'
+            f'<div class="question-stem"><span class="question-number">{display_index}</span>'
+            f'<span>{_practice_value_html(question.get("stem", ""))}</span></div>'
+            f"{images_html}"
+            f'<div class="practice-options">{"".join(option_html)}</div>'
+            "</article>"
+        )
+        question_payload.append(
+            {
+                "display_index": display_index,
+                "original_index": int(question.get("original_index", display_index - 1) or 0),
+                "stem": str(question.get("stem", "")),
+                "correct": str(question.get("correct", "")),
+                "analysis": str(question.get("analysis", "")),
+                "options": option_values,
+            }
+        )
+
+    question_json = _safe_script_json(question_payload)
+    return f"""
+<style>
+  body {{
+    margin: 0;
+    font-family: "Microsoft YaHei", "SimSun", Arial, sans-serif;
+    color: #2f261a;
+    background: transparent;
+  }}
+  .practice-widget {{ padding: 0 1px 18px; }}
+  .practice-group-title {{
+    display: flex;
+    align-items: center;
+    margin: 1.05rem 0 .68rem;
+    color: #835108;
+    font-size: 1.05rem;
+    font-weight: 800;
+  }}
+  .practice-group-title::before {{
+    content: "";
+    width: 4px;
+    height: 1.05rem;
+    margin-right: .5rem;
+    border-radius: 999px;
+    background: #d89a22;
+  }}
+  .practice-question-card {{
+    padding: .9rem .95rem;
+    margin: .75rem 0;
+    border: 1px solid #e6c98f;
+    border-radius: 8px;
+    background: rgba(255, 253, 248, .98);
+    box-shadow: 0 8px 18px rgba(111, 78, 32, .055), inset 0 1px 0 rgba(255, 255, 255, .88);
+  }}
+  .question-stem {{
+    display: flex;
+    gap: .65rem;
+    align-items: flex-start;
+    margin-bottom: .55rem;
+    font-size: 1rem;
+    line-height: 1.75;
+    color: #2f261a;
+    font-weight: 700;
+  }}
+  .question-number {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.8rem;
+    height: 1.8rem;
+    margin-top: .05rem;
+    border-radius: 999px;
+    background: #fff0bf;
+    color: #835108;
+    font-size: .9rem;
+    font-weight: 800;
+  }}
+  .practice-options {{
+    display: grid;
+    gap: .52rem;
+    margin-top: .55rem;
+  }}
+  .practice-option {{
+    display: flex;
+    align-items: flex-start;
+    gap: .55rem;
+    padding: .5rem .62rem;
+    border: 1px solid #ead7ad;
+    border-radius: 8px;
+    background: #fffaf0;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+  }}
+  .practice-option:hover {{
+    border-color: #d49a2a;
+    background: #fff4d8;
+    box-shadow: 0 4px 12px rgba(111, 78, 32, .06);
+  }}
+  .practice-option input {{ margin-top: .24rem; }}
+  .practice-option-label {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.42rem;
+    height: 1.42rem;
+    border-radius: 999px;
+    background: #fff0bf;
+    color: #835108;
+    font-weight: 800;
+    font-size: .8rem;
+  }}
+  .practice-option-text {{ line-height: 1.55; }}
+  .practice-actions {{ display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-top: .85rem; }}
+  .practice-actions button {{
+    border: 1px solid #b86f00;
+    border-radius: 7px;
+    padding: .55rem .95rem;
+    background: #b86f00;
+    color: #fff;
+    font-weight: 800;
+    cursor: pointer;
+  }}
+  .course-images {{ display: flex; flex-wrap: wrap; gap: .9rem; margin: .6rem 0 1.1rem; }}
+  .course-image-wrap {{ margin: 0; }}
+  .course-image {{
+    display: block;
+    max-height: 420px;
+    object-fit: contain;
+    border: 1px solid #e4c78b;
+    border-radius: 8px;
+    background: #fffdf8;
+    padding: .5rem;
+    box-shadow: 0 9px 20px rgba(111, 78, 32, .075);
+  }}
+  .course-image-placeholder {{
+    border: 1px dashed #c8a76a;
+    border-radius: 8px;
+    background: #fffaf0;
+    color: #735f43;
+    padding: .75rem .9rem;
+    font-size: .92rem;
+  }}
+  .inline-formula {{
+    display: inline-block;
+    height: 1.45em;
+    max-width: 10em;
+    margin: 0 .08rem;
+    vertical-align: -0.35em;
+    object-fit: contain;
+  }}
+  .inline-formula-text {{
+    display: inline;
+    margin: 0 .08rem;
+    font-family: "Times New Roman", "Cambria Math", serif;
+    font-size: 1em;
+    color: #3f2a0b;
+    white-space: nowrap;
+  }}
+  .inline-formula-frac {{
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    margin: 0 .08em;
+    vertical-align: middle;
+    transform: translateY(-0.06em);
+    line-height: .95;
+    font-size: .82em;
+  }}
+  .inline-formula-frac .frac-top {{
+    display: block;
+    border-bottom: 1px solid currentColor;
+    padding: 0 .16em .035em;
+  }}
+  .inline-formula-frac .frac-bottom {{
+    display: block;
+    padding: .035em .16em 0;
+  }}
+</style>
+<div class="practice-widget">
+  <form id="practiceForm">
+    {"".join(rendered)}
+    <div class="practice-actions">
+      <button type="submit">提交快速练习</button>
+    </div>
+  </form>
+</div>
+<script>
+(() => {{
+  const questions = {question_json};
+  const form = document.getElementById("practiceForm");
+  form.addEventListener("submit", event => {{
+    event.preventDefault();
+    let score = 0;
+    const items = questions.map(question => {{
+      const selected = new FormData(form).get(`q_${{question.display_index}}`) || "";
+      const isCorrect = selected === question.correct;
+      if (isCorrect) {{
+        score += 1;
+      }}
+      return {{
+        index: question.display_index,
+        display_index: question.display_index,
+        original_index: question.original_index,
+        stem: question.stem,
+        selected: selected || null,
+        correct: question.correct,
+        analysis: question.analysis,
+        is_correct: isCorrect,
+      }};
+    }});
+    if (typeof window.notifyPracticeSubmitted === "function") {{
+      window.notifyPracticeSubmitted({{
+        action: "practice_submitted",
+        nonce: String(Date.now()),
+        score,
+        items,
+        source_indexes: questions.map(question => question.original_index),
+      }});
+    }}
+  }});
+  if (typeof window.renderLatexInElement === "function") {{
+    window.renderLatexInElement(document.querySelector(".practice-widget"));
+  }}
+  if (typeof window.requestPracticeResize === "function") {{
+    window.requestPracticeResize();
+  }}
+}})();
+</script>
+"""
 
 
 def fill_interaction_html(
@@ -793,6 +1213,12 @@ def fill_interaction_html(
     }}
   }}
 
+  function renderLatex(target) {{
+    if (typeof window.renderLatexInElement === "function") {{
+      window.renderLatexInElement(target);
+    }}
+  }}
+
   function activeBlanks() {{
     const activePage = fillPages[currentPage];
     if (!activePage) return blanks;
@@ -827,6 +1253,7 @@ def fill_interaction_html(
     if (enterPracticeButton) enterPracticeButton.classList.add("hidden");
     setSelected(null);
     if (resultEl) resultEl.textContent = "";
+    renderLatex(document.querySelector(".fill-widget"));
     requestResize();
   }}
 
@@ -837,6 +1264,7 @@ def fill_interaction_html(
       if (option) option.classList.remove("used");
     }}
     blank.dataset.optionId = "";
+    blank.dataset.filledText = "";
     blank.classList.remove("filled", "correct", "wrong", "unfilled");
     const answer = blank.querySelector(".word-blank-answer");
     if (answer) answer.textContent = "";
@@ -849,11 +1277,15 @@ def fill_interaction_html(
     if (oldBlank) clearBlank(oldBlank);
     clearBlank(blank);
     blank.dataset.optionId = optionId;
+    const rawText = option.dataset.text || "";
+    blank.dataset.filledText = rawText;
     blank.classList.add("filled");
     const answer = blank.querySelector(".word-blank-answer");
-    if (answer) answer.textContent = option.dataset.text || "";
+    if (answer) answer.textContent = rawText;
+    renderLatex(blank);
     option.classList.add("used");
     setSelected(null);
+    requestResize();
   }}
 
   options.forEach(option => {{
@@ -913,7 +1345,7 @@ def fill_interaction_html(
       blanks: blanks.map(blank => ({{
         blankId: blank.dataset.blankId || "",
         optionId: blank.dataset.optionId || "",
-        answerText: blank.querySelector(".word-blank-answer")?.textContent || "",
+        answerText: blank.dataset.filledText || blank.querySelector(".word-blank-answer")?.textContent || "",
         classes: Array.from(blank.classList).filter(name =>
           ["filled", "correct", "wrong", "unfilled"].includes(name)
         ),
@@ -935,10 +1367,12 @@ def fill_interaction_html(
       const blank = blanks.find(item => item.dataset.blankId === saved.blankId);
       if (!blank) return;
       blank.dataset.optionId = saved.optionId || "";
+      blank.dataset.filledText = saved.answerText || "";
       blank.classList.remove("filled", "correct", "wrong", "unfilled");
       (saved.classes || []).forEach(name => blank.classList.add(name));
       const answer = blank.querySelector(".word-blank-answer");
       if (answer) answer.textContent = saved.answerText || "";
+      renderLatex(blank);
       if (saved.optionId) {{
         const option = optionById(saved.optionId);
         if (option) option.classList.add("used");
@@ -948,6 +1382,7 @@ def fill_interaction_html(
     if (nextPageButton && state.buttons) nextPageButton.classList.toggle("hidden", Boolean(state.buttons.goNextPage));
     if (enterPracticeButton && state.buttons) enterPracticeButton.classList.toggle("hidden", Boolean(state.buttons.enterPractice));
     if (resultEl) resultEl.textContent = state.resultText || "";
+    renderLatex(root);
     requestResize();
   }}
 
@@ -958,7 +1393,7 @@ def fill_interaction_html(
     const pageBlanks = activeBlanks();
     pageBlanks.forEach(blank => {{
       blank.classList.remove("correct", "wrong", "unfilled");
-      const filled = (blank.querySelector(".word-blank-answer")?.textContent || "").trim();
+      const filled = (blank.dataset.filledText || blank.querySelector(".word-blank-answer")?.textContent || "").trim();
       const expected = (blank.dataset.answer || "").trim();
       if (!filled) {{
         blank.classList.add("unfilled");

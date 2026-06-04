@@ -13,7 +13,7 @@ import streamlit.components.v1 as components
 
 from src.memory_course_web.finished_course_parser import parse_finished_course
 from src.memory_course_web.generation import DeepSeekConfig, generate_blank_distractors
-from src.memory_course_web.rendering import build_word_bank, course_id, fill_interaction_html, image_group_html, knowledge_html, stable_options
+from src.memory_course_web.rendering import build_word_bank, course_id, fill_interaction_html, knowledge_html, practice_interaction_html, stable_options
 from src.memory_course_web.validation import validate_finished_course_payload
 
 
@@ -30,6 +30,14 @@ COURSE_STAGE_PRACTICE = "practice"
 FILL_INTERACTION_COMPONENT = components.declare_component(
     "fill_interaction_component",
     path=str((Path(__file__).parent / "src" / "memory_course_web" / "fill_component").resolve()),
+)
+HTML_CONTENT_COMPONENT = components.declare_component(
+    "html_content_component",
+    path=str((Path(__file__).parent / "src" / "memory_course_web" / "html_component").resolve()),
+)
+PRACTICE_INTERACTION_COMPONENT = components.declare_component(
+    "practice_interaction_component",
+    path=str((Path(__file__).parent / "src" / "memory_course_web" / "practice_component").resolve()),
 )
 
 
@@ -82,31 +90,25 @@ h1, h2, h3 {
   margin: 0;
   color: #7b674c;
 }
-.course-ready-card,
-.practice-result-card,
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker) {
+.course-ready-card {
   position: relative;
   overflow: hidden;
   isolation: isolate;
 }
-.course-ready-card > *,
-.practice-result-card > *,
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker) > div {
+.course-ready-card > * {
   position: relative;
   z-index: 1;
 }
-.course-ready-card::after,
-.practice-result-card::after,
-div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker)::after {
+.course-ready-card::after {
   content: "";
   position: absolute;
   right: 1.35rem;
   bottom: .75rem;
-  width: 220px;
-  height: 72px;
+  width: 230px;
+  height: 74px;
   background: url("/app/static/shiguang-logo.png") center / contain no-repeat;
-  opacity: .075;
-  filter: blur(1.2px);
+  opacity: .13;
+  filter: none;
   pointer-events: none;
   z-index: 0;
 }
@@ -125,10 +127,6 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker)::after {
   font-size: 1.55rem;
   line-height: 1.45;
   font-weight: 800;
-}
-.learning-card {
-  padding: 1.05rem 1.15rem 1.15rem;
-  margin-top: .9rem;
 }
 .section-kicker {
   display: inline-flex;
@@ -429,10 +427,13 @@ div[role="radiogroup"] label:hover {
   .learning-card {
     padding: .85rem;
   }
-  .course-ready-card::after,
-  .practice-result-card::after,
-  div[data-testid="stVerticalBlockBorderWrapper"]:has(.section-kicker)::after {
-    display: none;
+  .course-ready-card::after {
+    right: .75rem;
+    bottom: .55rem;
+    width: 145px;
+    height: 48px;
+    opacity: .12;
+    filter: none;
   }
 }
 </style>
@@ -524,6 +525,10 @@ def _fill_component_action_key(cid: str) -> str:
     return f"fill_component_action_{cid}"
 
 
+def _practice_component_action_key(cid: str) -> str:
+    return f"practice_component_action_{cid}"
+
+
 def _set_course_stage(cid: str, stage: str) -> None:
     st.session_state[_course_stage_key(cid)] = stage
 
@@ -553,8 +558,29 @@ def _handle_fill_component_result(cid: str, result: Any) -> bool:
     return True
 
 
+def _handle_practice_component_result(cid: str, result: Any) -> bool:
+    if not isinstance(result, dict) or result.get("action") != "practice_submitted":
+        return False
+    nonce = str(result.get("nonce") or "")
+    consumed_key = _practice_component_action_key(cid)
+    consumed_nonce = str(st.session_state.get(consumed_key, ""))
+    if nonce and consumed_nonce == nonce:
+        return False
+    items = result.get("items", [])
+    if not isinstance(items, list):
+        return False
+    st.session_state[consumed_key] = nonce or "practice_submitted"
+    st.session_state[_practice_result_key(cid)] = {
+        "score": int(result.get("score", 0) or 0),
+        "items": items,
+        "source_indexes": result.get("source_indexes", []),
+    }
+    return True
+
+
 def _clear_practice_state(cid: str, *, clear_sample: bool = True) -> None:
     st.session_state.pop(_practice_result_key(cid), None)
+    st.session_state.pop(_practice_component_action_key(cid), None)
     if clear_sample:
         st.session_state.pop(_practice_sample_key(cid), None)
         st.session_state.pop(_practice_round_key(cid), None)
@@ -672,40 +698,23 @@ def _render_practice_tab(payload: dict[str, Any]) -> None:
 
     if result_key in st.session_state:
         result = st.session_state[result_key]
-        result_items = result.get("items", result.get("wrong_items", []))
-        result_total = len(result_items)
-        result_score = int(result.get("score", 0))
-        result_accuracy = _practice_accuracy_percent(result_score, result_total)
-        st.markdown(
-            f'<div class="practice-result-card"><strong>快速练习得分：</strong>'
-            f'{result_score} / {result_total}'
-            f'<span class="practice-result-rate">正确率：{result_accuracy}%</span></div>',
-            unsafe_allow_html=True,
-        )
-        for item in result_items:
+        result_items = []
+        for item in result.get("items", result.get("wrong_items", [])):
+            if not isinstance(item, dict):
+                continue
             display_index = int(item.get("display_index", item.get("index", 0)) or 0)
             original_index = int(item.get("original_index", display_index - 1) or 0)
             source_question = questions[original_index] if 0 <= original_index < len(questions) else {}
-            is_correct = bool(item.get("is_correct"))
-            state_class = "is-correct" if is_correct else "is-wrong"
-            status = "正确" if is_correct else "错误"
-            analysis = str(item.get("analysis") or source_question.get("analysis", "")).strip()
-            analysis_html = (
-                f'<div class="practice-review-analysis"><strong>解析：</strong>{html.escape(analysis)}</div>'
-                if analysis
-                else ""
-            )
-            st.markdown(
-                f'<div class="practice-review-item {state_class}">'
-                f'<span class="practice-review-status">{status}</span><br>'
-                f'<strong>第 {display_index} 题</strong><br>'
-                f'{html.escape(str(item["stem"]))}<br>'
-                f'你的选择：{html.escape(str(item["selected"] or "未作答"))}<br>'
-                f'正确答案：{html.escape(str(item["correct"]))}'
-                f'{analysis_html}'
-                '</div>',
-                unsafe_allow_html=True,
-            )
+            enriched_item = dict(item)
+            if not str(enriched_item.get("analysis", "")).strip():
+                enriched_item["analysis"] = source_question.get("analysis", "")
+            result_items.append(enriched_item)
+        result_score = int(result.get("score", 0))
+        PRACTICE_INTERACTION_COMPONENT(
+            html=practice_interaction_html([], result_items=result_items, score=result_score),
+            default={},
+            key=f"practice_result_component_{cid}",
+        )
         if st.button("重新练习", key=f"practice_restart_{cid}"):
             st.session_state.pop(result_key, None)
             _reset_practice_sample(cid)
@@ -720,60 +729,27 @@ def _render_practice_tab(payload: dict[str, Any]) -> None:
         for display_index, original_index in enumerate(sample_indexes, start=1)
     ]
 
-    with st.form(f"practice_form_{cid}"):
-        selected_answers: list[tuple[int, int, dict[str, Any], str | None]] = []
-        current_category = ""
-        for display_index, original_index, question in sampled_questions:
-            category = str(question.get("category") or "").strip()
-            if not physics_payload and category and category != current_category:
-                current_category = category
-                st.markdown(
-                    f'<div class="practice-group-title">{html.escape(str(current_category))}</div>',
-                    unsafe_allow_html=True,
-                )
-            with st.container(border=True):
-                st.markdown(
-                    '<div class="question-stem">'
-                    f'<span class="question-number">{display_index}</span>'
-                    f'<span>{html.escape(str(question["stem"]))}</span>'
-                    '</div>',
-                    unsafe_allow_html=True,
-                )
-                if question.get("images"):
-                    st.markdown(image_group_html(question["images"]), unsafe_allow_html=True)
-                options = stable_options(question["correct"], question["wrong"], f"{cid}-question-{sample_round}-{original_index}")
-                option_labels = {option: f"{chr(65 + option_index)}. {option}" for option_index, option in enumerate(options)}
-                selected = st.radio(
-                    "选择答案",
-                    options,
-                    index=None,
-                    key=f"practice_{cid}_{sample_round}_{display_index}",
-                    label_visibility="collapsed",
-                    format_func=lambda value, labels=option_labels: labels.get(value, value),
-                )
-                selected_answers.append((display_index, original_index, question, selected))
-        submitted = st.form_submit_button("提交快速练习")
-
-    if submitted:
-        result_items = []
-        score = 0
-        for display_index, original_index, question, selected in selected_answers:
-            is_correct = selected == question["correct"]
-            if is_correct:
-                score += 1
-            result_items.append(
-                {
-                    "index": display_index,
-                    "display_index": display_index,
-                    "original_index": original_index,
-                    "stem": question["stem"],
-                    "selected": selected,
-                    "correct": question["correct"],
-                    "analysis": question.get("analysis", ""),
-                    "is_correct": is_correct,
-                }
-            )
-        st.session_state[result_key] = {"score": score, "items": result_items, "source_indexes": sample_indexes}
+    component_questions: list[dict[str, Any]] = []
+    for display_index, original_index, question in sampled_questions:
+        options = stable_options(question["correct"], question["wrong"], f"{cid}-question-{sample_round}-{original_index}")
+        component_questions.append(
+            {
+                "display_index": display_index,
+                "original_index": original_index,
+                "category": "" if physics_payload else str(question.get("category") or "").strip(),
+                "stem": question["stem"],
+                "correct": question["correct"],
+                "analysis": question.get("analysis", ""),
+                "images": question.get("images", []),
+                "options": options,
+            }
+        )
+    component_result = PRACTICE_INTERACTION_COMPONENT(
+        html=practice_interaction_html(component_questions),
+        default={},
+        key=f"practice_component_{cid}_{sample_round}",
+    )
+    if _handle_practice_component_result(cid, component_result):
         st.rerun()
 
 
@@ -793,9 +769,10 @@ def _render_course(payload: dict[str, Any]) -> None:
     if active_stage == COURSE_STAGE_SHOW:
         with st.container(border=True):
             st.markdown('<div class="section-kicker">知识展示</div>', unsafe_allow_html=True)
-            st.markdown(
-                knowledge_html(payload["knowledge_paragraphs"], payload["blanks"], payload.get("knowledge_images", [])),
-                unsafe_allow_html=True,
+            HTML_CONTENT_COMPONENT(
+                html=knowledge_html(payload["knowledge_paragraphs"], payload["blanks"], payload.get("knowledge_images", [])),
+                default={},
+                key=f"knowledge_display_{cid}",
             )
         if st.button("进入知识填空", type="primary", key=f"enter_fill_{cid}"):
             _set_course_stage(cid, COURSE_STAGE_FILL)

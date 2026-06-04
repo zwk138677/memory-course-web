@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/app/static/katex/katex.min.css">
+  <script defer src="/app/static/katex/katex.min.js"></script>
+  <script defer src="/app/static/katex/auto-render.min.js"></script>
   <style>
     html,
     body {
@@ -10,6 +13,19 @@
       padding: 0;
       background: transparent;
       overflow: hidden;
+    }
+    .katex {
+      font-size: 1.08em;
+      line-height: 1.08;
+      vertical-align: -0.06em;
+    }
+    .katex-display {
+      margin: .65em 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .katex-display > .katex {
+      vertical-align: 0;
     }
   </style>
 </head>
@@ -66,6 +82,37 @@
       });
     }
 
+    function renderLatexInElement(element) {
+      if (!element || typeof window.renderMathInElement !== "function") {
+        return;
+      }
+      try {
+        window.renderMathInElement(element, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "\\(", right: "\\)", display: false },
+            { left: "$", right: "$", display: false },
+          ],
+          throwOnError: true,
+          strict: "ignore",
+          errorCallback() {},
+        });
+      } catch (error) {
+        // Keep unsupported formulas as readable source text.
+      }
+    }
+
+    function renderLatexWhenReady(element) {
+      const attempt = () => {
+        renderLatexInElement(element);
+        resizeToContent();
+      };
+      attempt();
+      window.setTimeout(attempt, 120);
+      window.setTimeout(attempt, 500);
+    }
+
     function collectFillState() {
       if (window.__fillWidgetApi && typeof window.__fillWidgetApi.collectState === "function") {
         return window.__fillWidgetApi.collectState();
@@ -78,7 +125,7 @@
       const blanks = Array.from(root.querySelectorAll(".word-blank-drop")).map(blank => ({
         blankId: blank.dataset.blankId || "",
         optionId: blank.dataset.optionId || "",
-        answerText: blank.querySelector(".word-blank-answer")?.textContent || "",
+        answerText: blank.dataset.filledText || blank.querySelector(".word-blank-answer")?.textContent || "",
         classes: Array.from(blank.classList).filter(name =>
           ["filled", "correct", "wrong", "unfilled"].includes(name)
         ),
@@ -134,6 +181,7 @@
           return;
         }
         blank.dataset.optionId = saved.optionId || "";
+        blank.dataset.filledText = saved.answerText || "";
         blank.classList.remove("filled", "correct", "wrong", "unfilled");
         (saved.classes || []).forEach(name => blank.classList.add(name));
         const answer = blank.querySelector(".word-blank-answer");
@@ -179,6 +227,8 @@
         restoreFillState(window.__fillSavedState);
         window.__fillSavedState = null;
       }
+      window.renderLatexInElement = renderLatexInElement;
+      renderLatexWhenReady(root);
       requestAnimationFrame(resizeToContent);
       window.setTimeout(resizeToContent, 120);
       window.setTimeout(resizeToContent, 500);

@@ -120,6 +120,22 @@ def test_practice_accuracy_percent():
     assert app._practice_accuracy_percent(0, 0) == 0
 
 
+def test_only_ready_course_card_uses_logo_watermark():
+    assert ".course-ready-card::after" in app.APP_CSS
+    assert 'background: url("/app/static/shiguang-logo.png") center / contain no-repeat;' in app.APP_CSS
+    assert ".practice-result-card::after" not in app.APP_CSS
+    assert 'url("/app/static/shiguang-logo.png") right 1.35rem bottom .75rem' not in app.APP_CSS
+
+
+def test_course_sections_use_standard_streamlit_containers():
+    import inspect
+
+    source = inspect.getsource(app._render_course)
+
+    assert '<section class="learning-card">' not in source
+    assert source.count("with st.container(border=True):") >= 3
+
+
 def test_course_stage_defaults_and_validates(monkeypatch):
     fake_state = {}
     monkeypatch.setattr(app.st, "session_state", fake_state)
@@ -145,6 +161,26 @@ def test_fill_component_practice_event_is_consumed_once(monkeypatch):
     fake_state[app._course_stage_key("course")] = app.COURSE_STAGE_FILL
     assert not app._handle_fill_component_result("course", result)
     assert fake_state[app._course_stage_key("course")] == app.COURSE_STAGE_FILL
+
+
+def test_practice_component_submit_event_is_consumed_once(monkeypatch):
+    fake_state = {}
+    monkeypatch.setattr(app.st, "session_state", fake_state)
+
+    result = {
+        "action": "practice_submitted",
+        "nonce": "practice-1",
+        "score": 1,
+        "items": [{"display_index": 1, "stem": r"$x$", "selected": r"$x$", "correct": r"$x$", "is_correct": True}],
+        "source_indexes": [0],
+    }
+
+    assert app._handle_practice_component_result("course", result)
+    assert fake_state[app._practice_result_key("course")]["score"] == 1
+
+    fake_state[app._practice_result_key("course")]["score"] = 0
+    assert not app._handle_practice_component_result("course", result)
+    assert fake_state[app._practice_result_key("course")]["score"] == 0
 
 
 def test_step_indicator_is_not_clickable():

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/app/static/katex/katex.min.css">
+  <script defer src="/app/static/katex/katex.min.js"></script>
+  <script defer src="/app/static/katex/auto-render.min.js"></script>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      overflow: hidden;
+    }
+    .katex {
+      font-size: 1.08em;
+      line-height: 1.08;
+      vertical-align: -0.06em;
+    }
+    .katex-display {
+      margin: .65em 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .katex-display > .katex {
+      vertical-align: 0;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const Streamlit = {
+      setComponentReady() {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+          "*"
+        );
+      },
+      setFrameHeight(height) {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height },
+          "*"
+        );
+      },
+      setComponentValue(value) {
+        window.parent.postMessage(
+          { isStreamlitMessage: true, type: "streamlit:setComponentValue", value },
+          "*"
+        );
+      },
+    };
+
+    let lastHeight = 0;
+
+    function resizeToContent() {
+      const root = document.getElementById("root");
+      const height = Math.max(
+        160,
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+        root ? root.scrollHeight : 0
+      );
+      if (Math.abs(height - lastHeight) < 3) {
+        return;
+      }
+      lastHeight = height;
+      Streamlit.setFrameHeight(height);
+    }
+
+    function executeInlineScripts(container) {
+      const scripts = Array.from(container.querySelectorAll("script"));
+      scripts.forEach(oldScript => {
+        const newScript = document.createElement("script");
+        Array.from(oldScript.attributes).forEach(attr => {
+          newScript.setAttribute(attr.name, attr.value);
+        });
+        newScript.text = oldScript.textContent || "";
+        oldScript.replaceWith(newScript);
+      });
+    }
+
+    function renderLatexInElement(element) {
+      if (!element || typeof window.renderMathInElement !== "function") {
+        return;
+      }
+      try {
+        window.renderMathInElement(element, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\[", right: "\\]", display: true },
+            { left: "\\(", right: "\\)", display: false },
+            { left: "$", right: "$", display: false },
+          ],
+          throwOnError: true,
+          strict: "ignore",
+          errorCallback() {},
+        });
+      } catch (error) {
+        // Keep unsupported formulas as source text.
+      }
+    }
+
+    function renderLatexWhenReady(element) {
+      const attempt = () => {
+        renderLatexInElement(element);
+        resizeToContent();
+      };
+      attempt();
+      window.setTimeout(attempt, 120);
+      window.setTimeout(attempt, 500);
+    }
+
+    function render(event) {
+      const args = event.data && event.data.args ? event.data.args : {};
+      const root = document.getElementById("root");
+      root.innerHTML = args.html || "";
+      window.notifyPracticeSubmitted = function notifyPracticeSubmitted(payload) {
+        Streamlit.setComponentValue(payload);
+      };
+      window.requestPracticeResize = function requestPracticeResize() {
+        window.setTimeout(resizeToContent, 0);
+      };
+      executeInlineScripts(root);
+      renderLatexWhenReady(root);
+      requestAnimationFrame(resizeToContent);
+    }
+
+    window.addEventListener("resize", resizeToContent);
+    window.addEventListener("message", event => {
+      if (event.data && event.data.type === "streamlit:render") {
+        render(event);
+      }
+    });
+    Streamlit.setComponentReady();
+  </script>
+</body>
+</html>

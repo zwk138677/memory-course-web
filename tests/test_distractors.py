@@ -3,7 +3,7 @@ from pathlib import Path
 from src.memory_course_web.distractors import fallback_distractors_for_blank
 from src.memory_course_web import generation
 from src.memory_course_web.generation import DeepSeekConfig, generate_blank_distractors
-from src.memory_course_web.rendering import build_word_bank, fill_interaction_html, fill_sheet_html, image_group_html, knowledge_html, word_bank_html
+from src.memory_course_web.rendering import build_word_bank, fill_interaction_html, fill_sheet_html, image_group_html, knowledge_html, practice_interaction_html, word_bank_html
 from src.memory_course_web.validation import validate_distractor_list, validate_finished_course_payload
 
 
@@ -368,6 +368,31 @@ def test_rendering_does_not_split_complex_literal_fraction_text():
     assert "a/b/c" in html
 
 
+def test_rendering_preserves_latex_delimiters_for_katex():
+    html = knowledge_html([r"$1/2$ and 1/2 and \(\sqrt{x}\)"], [])
+
+    assert "$1/2$" in html
+    assert r"\(\sqrt{x}\)" in html
+    assert html.count('class="inline-formula-frac"') == 1
+
+
+def test_word_bank_visible_text_preserves_latex():
+    word_bank = [
+        {
+            "number": 1,
+            "option_id": "answer-b001",
+            "text": r"$x^2$",
+            "is_answer": True,
+            "source_blank_id": "b001",
+        }
+    ]
+
+    html = word_bank_html(word_bank)
+
+    assert r"$x^2$" in html
+    assert 'data-text="$x^2$"' in html
+
+
 def test_word_bank_uses_one_to_one_distractor_ratio():
     blanks = [
         {"id": "b001", "answer": "alpha", "distractors": ["delta"]},
@@ -479,6 +504,7 @@ def test_fill_interaction_html_paginates_numbered_sections():
     assert "requestFillResize" in html
     assert "window.__fillWidgetApi" in html
     assert "restoreState(window.__fillSavedState)" in html
+    assert "blank.dataset.filledText" in html
     assert "window.parent.location" not in html
     assert "accuracy >= 0.6" in html
     assert "本页正确率" in html
@@ -491,7 +517,71 @@ def test_fill_component_restores_state_without_global_mutation_observer():
     assert "restoreFillState" in component_html
     assert "window.__fillWidgetApi.collectState" in component_html
     assert "window.__fillSavedState = previousState" in component_html
+    assert "/app/static/katex/katex.min.css" in component_html
+    assert "/app/static/katex/katex.min.js" in component_html
+    assert "/app/static/katex/auto-render.min.js" in component_html
+    assert "renderMathInElement" in component_html
+    assert ".katex" in component_html
+    assert "font-size: 1.08em" in component_html
+    assert "vertical-align: -0.06em" in component_html
+    assert "line-height: 1.08" in component_html
     assert "MutationObserver" not in component_html
+
+
+def test_practice_component_loads_local_katex_assets():
+    component_html = Path("src/memory_course_web/practice_component/index.html").read_text(encoding="utf-8")
+
+    assert "/app/static/katex/katex.min.css" in component_html
+    assert "/app/static/katex/katex.min.js" in component_html
+    assert "/app/static/katex/auto-render.min.js" in component_html
+    assert "renderMathInElement" in component_html
+    assert ".katex" in component_html
+    assert "font-size: 1.08em" in component_html
+    assert "vertical-align: -0.06em" in component_html
+
+
+def test_html_component_loads_local_katex_assets():
+    component_html = Path("src/memory_course_web/html_component/index.html").read_text(encoding="utf-8")
+
+    assert "/app/static/katex/katex.min.css" in component_html
+    assert "/app/static/katex/katex.min.js" in component_html
+    assert "/app/static/katex/auto-render.min.js" in component_html
+    assert "renderMathInElement" in component_html
+    assert ".katex" in component_html
+    assert "font-size: 1.08em" in component_html
+    assert "vertical-align: -0.06em" in component_html
+    assert ".knowledge-body p" in component_html
+    assert ".answer-mark" in component_html
+
+
+def test_static_katex_assets_are_present():
+    assert Path("static/katex/katex.min.css").exists()
+    assert Path("static/katex/katex.min.js").exists()
+    assert Path("static/katex/auto-render.min.js").exists()
+    assert any(Path("static/katex/fonts").glob("KaTeX_Main-Regular.*"))
+
+
+def test_practice_interaction_html_contains_latex_and_submit_payload():
+    html = practice_interaction_html(
+        [
+            {
+                "display_index": 1,
+                "original_index": 0,
+                "category": "",
+                "stem": r"计算 $\frac{1}{2}+x$",
+                "correct": r"$x$",
+                "wrong": [r"$2x$", "1"],
+                "analysis": r"保留 $\frac{1}{2}$。",
+                "options": [r"$x$", r"$2x$", "1"],
+                "images": [],
+            }
+        ]
+    )
+
+    assert r"$\frac{1}{2}+x$" in html
+    assert r"$x$" in html
+    assert "practice_submitted" in html
+    assert "notifyPracticeSubmitted" in html
 
 
 def test_fill_interaction_html_page_word_banks_only_include_page_options():
