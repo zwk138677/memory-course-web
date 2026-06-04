@@ -7,6 +7,7 @@ import html
 import json
 import random
 import re
+import base64
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ def _katex_inline_assets_html() -> str:
         auto_render_js = (katex_dir / "auto-render.min.js").read_text(encoding="utf-8")
     except OSError:
         return ""
+    css = _embed_katex_woff2_fonts(css, katex_dir)
     katex_js = katex_js.replace("</script>", "<\\/script>")
     auto_render_js = auto_render_js.replace("</script>", "<\\/script>")
     return (
@@ -37,6 +39,21 @@ def _katex_inline_assets_html() -> str:
         f'<script class="katex-inline-assets">{katex_js}</script>'
         f'<script class="katex-inline-assets">{auto_render_js}</script>'
     )
+
+
+def _embed_katex_woff2_fonts(css: str, katex_dir: Path) -> str:
+    """Inline KaTeX woff2 fonts so Streamlit Cloud renders like local."""
+
+    def replace(match: re.Match[str]) -> str:
+        relative_font = match.group(1)
+        font_path = katex_dir / relative_font
+        try:
+            encoded = base64.b64encode(font_path.read_bytes()).decode("ascii")
+        except OSError:
+            return match.group(0)
+        return f'url(data:font/woff2;base64,{encoded})'
+
+    return re.sub(r"url\((fonts/[^)]+\.woff2)\)", replace, css)
 
 
 def stable_options(correct: str, wrong: list[str], salt: str) -> list[str]:

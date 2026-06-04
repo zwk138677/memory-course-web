@@ -3,7 +3,16 @@ from pathlib import Path
 from src.memory_course_web.distractors import fallback_distractors_for_blank
 from src.memory_course_web import generation
 from src.memory_course_web.generation import DeepSeekConfig, generate_blank_distractors
-from src.memory_course_web.rendering import build_word_bank, fill_interaction_html, fill_sheet_html, image_group_html, knowledge_html, practice_interaction_html, word_bank_html
+from src.memory_course_web.rendering import (
+    _katex_inline_assets_html,
+    build_word_bank,
+    fill_interaction_html,
+    fill_sheet_html,
+    image_group_html,
+    knowledge_html,
+    practice_interaction_html,
+    word_bank_html,
+)
 from src.memory_course_web.validation import validate_distractor_list, validate_finished_course_payload
 
 
@@ -376,6 +385,13 @@ def test_rendering_preserves_latex_delimiters_for_katex():
     assert html.count('class="inline-formula-frac"') == 1
     assert "katex-inline-assets" in html
     assert "renderMathInElement" in html
+
+
+def test_inline_katex_assets_embed_woff2_fonts():
+    html = _katex_inline_assets_html()
+
+    assert "data:font/woff2;base64," in html
+    assert "fonts/KaTeX_Main-Regular.woff2" not in html
 
 
 def test_word_bank_visible_text_preserves_latex():
