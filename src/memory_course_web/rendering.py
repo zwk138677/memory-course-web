@@ -16,7 +16,9 @@ from .distractors import is_placeholder_distractor, neutral_fallback_candidates
 
 BLANK_SLOT_PLACEHOLDER = "______"
 PAGE_STANDALONE_RE = re.compile(r"^\s*(?:第\s*)?([0-9]{1,2}|[一二三四五六七八九十]{1,3})(?:[.．、])?\s*$")
-PAGE_PREFIX_RE = re.compile(r"^\s*(?:第\s*)?([0-9]{1,2}|[一二三四五六七八九十]{1,3})[.．、]\s+\S")
+PAGE_PREFIX_RE = re.compile(
+    r"^\s*(?:第\s*)?(?:(?P<number>[0-9]{1,2})(?:[.．]\s+\S|、\s*\S)|(?P<cn>[一二三四五六七八九十]{1,3})[.．、]\s*\S)"
+)
 KNOWLEDGE_ITEM_PAGE_RE = re.compile(r"^\s*知识小题\s*(\d+)\s*[.．、]\s*\S")
 
 
@@ -478,7 +480,7 @@ def _page_label_for_paragraph(paragraph: str) -> str | None:
         return standalone.group(1)
     prefixed = PAGE_PREFIX_RE.match(stripped)
     if prefixed:
-        return prefixed.group(1)
+        return prefixed.group("number") or prefixed.group("cn")
     return None
 
 
@@ -549,8 +551,8 @@ def _page_nav_html(pages: list[dict[str, Any]]) -> str:
     if len(pages) <= 1:
         return ""
     labels = []
-    for index, page in enumerate(pages):
-        label = html.escape(str(page.get("label") or index + 1))
+    for index, _page in enumerate(pages):
+        label = html.escape(str(index + 1))
         labels.append(
             f'<span class="fill-page-number" data-page-target="{index}" aria-label="第 {label} 页">{label}</span>'
         )

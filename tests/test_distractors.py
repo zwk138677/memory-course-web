@@ -529,6 +529,37 @@ def test_fill_interaction_html_paginates_numbered_sections():
     assert "本页正确率" in html
 
 
+def test_fill_interaction_html_paginates_chinese_numbered_headings_without_spaces():
+    paragraphs = ["\u4e00\u3001alpha", "first", "3.14 is not a section", "middle", "\u4e8c\u3001beta", "second"]
+    blanks = [
+        {"id": "b001", "answer": "first", "paragraph_index": 1, "start": 0, "end": 5, "distractors": ["delta"]},
+        {"id": "b002", "answer": "second", "paragraph_index": 5, "start": 0, "end": 6, "distractors": ["theta"]},
+    ]
+    word_bank = build_word_bank(blanks, "cn-paged")
+
+    html = fill_interaction_html(paragraphs, blanks, [], word_bank)
+
+    assert 'data-page-target="0"' in html
+    assert 'data-page-target="1"' in html
+    assert 'data-page-target="2"' not in html
+    nav_start = html.index('class="fill-page-nav"')
+    nav_end = html.index("</nav>", nav_start)
+    nav = html[nav_start:nav_end]
+    assert ">1</span>" in nav
+    assert ">2</span>" in nav
+    assert "\u4e00</span>" not in nav
+    assert "\u4e8c</span>" not in nav
+    first_page_start = html.index('class="fill-page active"')
+    second_page_start = html.index('class="fill-page"', first_page_start + 1)
+    first_page = html[first_page_start:second_page_start]
+    second_page = html[second_page_start:]
+    assert "\u4e00\u3001alpha" in first_page
+    assert "3.14 is not a section" in first_page
+    assert "\u4e8c\u3001beta" not in first_page
+    assert "\u4e8c\u3001beta" in second_page
+    assert "second" in second_page
+
+
 def test_fill_component_restores_state_without_global_mutation_observer():
     component_html = Path("src/memory_course_web/fill_component/index.html").read_text(encoding="utf-8")
 
