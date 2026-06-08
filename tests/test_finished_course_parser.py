@@ -96,6 +96,38 @@ def test_parse_physics_question_source_and_analysis_without_category():
     assert questions[0]["stem"] == "下列关于分子热运动的说法正确的是哪一项？"
 
 
+def test_parse_question_stem_keeps_leading_decimal():
+    paragraphs = [
+        ParsedParagraph("【第五题】："),
+        ParsedParagraph("【来源：知识小题2】"),
+        ParsedParagraph("【题目内容】：0.1010010001...（相邻两个 1 之间依次多一个 0）属于无理数，主要依据是什么？"),
+        ParsedParagraph("【正确选项】：它是具有特定结构的无限不循环小数。"),
+        ParsedParagraph("【错误选项1】：它的小数位数有限。"),
+        ParsedParagraph("【错误选项2】：它的小数部分循环重复。"),
+        ParsedParagraph("【错误选项3】：它可以直接化成分数。"),
+        ParsedParagraph("【解析】：该小数按特定规律无限延伸，但不循环，所以属于无理数。"),
+    ]
+
+    questions = _parse_questions(paragraphs, 0)
+
+    assert questions[0]["stem"].startswith("0.1010010001...")
+
+
+def test_parse_question_stem_strips_leading_item_number():
+    paragraphs = [
+        ParsedParagraph("【第一题】："),
+        ParsedParagraph("【题目内容】：1. 下列说法正确的是哪一项？"),
+        ParsedParagraph("【正确选项】：正确说法"),
+        ParsedParagraph("【错误选项1】：错误一"),
+        ParsedParagraph("【错误选项2】：错误二"),
+        ParsedParagraph("【错误选项3】：错误三"),
+    ]
+
+    questions = _parse_questions(paragraphs, 0)
+
+    assert questions[0]["stem"] == "下列说法正确的是哪一项？"
+
+
 def _write_minimal_docx(path: Path, texts: list[str]) -> None:
     def paragraph(text: str) -> str:
         if text.lstrip().startswith("<w:p"):
@@ -241,6 +273,48 @@ def test_parse_self_contained_distractor_groups_and_hides_marker_paragraphs(tmp_
     assert payload["distractor_groups"][0]["paragraph_indexes"] == [0, 1]
     assert payload["distractor_groups"][1]["paragraph_indexes"] == [2, 3]
     assert [blank["answer"] for blank in payload["blanks"]] == ["静止", "匀速直线运动", "同一物体", "相等", "相反"]
+
+
+def test_parse_math_numbered_sections_as_distractor_group_boundaries(tmp_path: Path):
+    docx = tmp_path / "math_numbered_sections.docx"
+    _write_minimal_docx(
+        docx,
+        [
+            "实数及其运算",
+            "一、相反数与绝对值",
+            (
+                "<w:p>"
+                "<w:r><w:t>若 a 表示一个数，则 a 的相反数是</w:t></w:r>"
+                '<w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>-a</w:t></w:r>'
+                "</w:p>"
+            ),
+            "干扰项：a；|a|",
+            "二、实数的运算顺序",
+            (
+                "<w:p>"
+                "<w:r><w:t>实数运算先算</w:t></w:r>"
+                '<w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>乘方和开方</w:t></w:r>'
+                "</w:p>"
+            ),
+            "干扰项：加减；乘除",
+            "— 配套练习题 —",
+            "【第一题】：",
+            "【来源：相反数与绝对值】",
+            "【题目内容】：a 的相反数是什么？",
+            "【正确选项】：-a",
+            "【错误选项1】：a",
+            "【错误选项2】：|a|",
+            "【错误选项3】：0",
+            "【解析】：相反数与原数符号相反。",
+        ],
+    )
+
+    payload = validate_finished_course_payload(parse_finished_course(docx).to_payload())
+
+    assert all("干扰项" not in paragraph for paragraph in payload["knowledge_paragraphs"])
+    assert [group["title"] for group in payload["distractor_groups"]] == ["一、相反数与绝对值", "二、实数的运算顺序"]
+    assert [group["paragraph_indexes"] for group in payload["distractor_groups"]] == [[0, 1], [2, 3]]
+    assert [group["distractors"] for group in payload["distractor_groups"]] == [["a", "|a|"], ["加减", "乘除"]]
 
 
 def test_parse_mathtype_preview_as_inline_formula():

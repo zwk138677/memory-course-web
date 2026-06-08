@@ -77,7 +77,7 @@ QUESTION_HEADING_RE = re.compile(r"^【第[一二三四五六七八九十百\d]+
 PHYSICS_KNOWLEDGE_POINT_RE = re.compile(r"^【知识点\s*\d+】$")
 KNOWLEDGE_ITEM_RE = re.compile(r"^知识小题\s*\d+\s*[.．、]")
 CHINESE_SECTION_RE = re.compile(r"^[一二三四五六七八九十]+[、.．]\s*(.+?)\s*$")
-LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[．.、]\s*")
+LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*(?:[、]\s*|[.．](?!\d)\s*)")
 DISTRACTOR_RE = re.compile(r"^\s*干扰项\s*[：:]\s*(.*)$")
 DISTRACTOR_SPLIT_RE = re.compile(r"[；;]")
 
@@ -695,6 +695,11 @@ def _is_knowledge_item_heading(text: str) -> bool:
     return bool(KNOWLEDGE_ITEM_RE.match(text.strip()))
 
 
+def _is_distractor_group_heading(text: str) -> bool:
+    stripped = text.strip()
+    return _is_knowledge_item_heading(stripped) or bool(CHINESE_SECTION_RE.match(stripped))
+
+
 def _strip_distractor_marker(text: str) -> str | None:
     match = DISTRACTOR_RE.match(text.strip())
     return match.group(1).strip() if match else None
@@ -740,7 +745,7 @@ def _extract_distractor_groups(knowledge: list[ParsedParagraph]) -> tuple[list[P
         paragraph = knowledge[index]
         text = paragraph.text.strip()
 
-        if _is_knowledge_item_heading(text):
+        if _is_distractor_group_heading(text):
             finish_current_item()
             current_item = {"title": text, "start": len(cleaned), "distractors": []}
             cleaned.append(paragraph)
@@ -755,7 +760,7 @@ def _extract_distractor_groups(knowledge: list[ParsedParagraph]) -> tuple[list[P
             index += 1
             while index < len(knowledge):
                 next_text = knowledge[index].text.strip()
-                if _is_knowledge_item_heading(next_text) or _is_practice_boundary(next_text):
+                if _is_distractor_group_heading(next_text) or _is_practice_boundary(next_text):
                     break
                 next_distractor_text = _strip_distractor_marker(next_text)
                 collected.append(next_distractor_text if next_distractor_text is not None else next_text)
