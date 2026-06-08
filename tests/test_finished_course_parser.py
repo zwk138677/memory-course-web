@@ -28,8 +28,10 @@ def test_parse_existing_finished_course_when_available():
     if not samples:
         pytest.skip("finished course DOCX sample is not present")
 
-    course = parse_finished_course(samples[0])
-    payload = validate_finished_course_payload(course.to_payload())
+    raw_payload = parse_finished_course(samples[0]).to_payload()
+    if raw_payload["blanks"] and not raw_payload.get("distractor_groups"):
+        pytest.skip("finished course DOCX sample has no self-contained distractor groups")
+    payload = validate_finished_course_payload(raw_payload)
 
     assert payload["title"]
     assert payload["knowledge_paragraphs"]
@@ -96,6 +98,8 @@ def test_parse_physics_question_source_and_analysis_without_category():
 
 def _write_minimal_docx(path: Path, texts: list[str]) -> None:
     def paragraph(text: str) -> str:
+        if text.lstrip().startswith("<w:p"):
+            return text
         return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
 
     document = (
@@ -188,6 +192,57 @@ def test_parse_direct_title_physics_reference_course(tmp_path: Path):
     assert payload["quick_practice"][0]["analysis"] == "物质可由分子、原子等微粒构成。"
 
 
+def test_parse_self_contained_distractor_groups_and_hides_marker_paragraphs(tmp_path: Path):
+    docx = tmp_path / "physics_self_distractors.docx"
+    _write_minimal_docx(
+        docx,
+        [
+            "二力平衡",
+            "知识小题1.定义",
+            (
+                "<w:p>"
+                "<w:r><w:t>物体保持</w:t></w:r>"
+                '<w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>静止</w:t></w:r>'
+                "<w:r><w:t>或</w:t></w:r>"
+                '<w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>匀速直线运动</w:t></w:r>'
+                "</w:p>"
+            ),
+            "干扰项：运动；匀速运动；匀速圆周运动",
+            "知识小题2.二力平衡的条件",
+            (
+                "<w:p>"
+                '<w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>同一物体</w:t></w:r>'
+                "<w:r><w:t>上的两个力，大小</w:t></w:r>"
+                '<w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>相等</w:t></w:r>'
+                "<w:r><w:t>，方向</w:t></w:r>"
+                '<w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>相反</w:t></w:r>'
+                "</w:p>"
+            ),
+            "干扰项：不同物体；相同；同一平面",
+            "— 配套练习题 —",
+            "【第一题】：",
+            "【来源：知识小题1】",
+            "【题目内容】：二力平衡时物体可处于什么状态？",
+            "【正确选项】：静止或匀速直线运动",
+            "【错误选项1】：只做曲线运动",
+            "【错误选项2】：速度一定变大",
+            "【错误选项3】：方向不断改变",
+            "【解析】：二力平衡时合力为零，物体保持平衡状态。",
+        ],
+    )
+
+    payload = validate_finished_course_payload(parse_finished_course(docx).to_payload())
+
+    assert all("干扰项" not in paragraph for paragraph in payload["knowledge_paragraphs"])
+    assert [group["distractors"] for group in payload["distractor_groups"]] == [
+        ["运动", "匀速运动", "匀速圆周运动"],
+        ["不同物体", "相同", "同一平面"],
+    ]
+    assert payload["distractor_groups"][0]["paragraph_indexes"] == [0, 1]
+    assert payload["distractor_groups"][1]["paragraph_indexes"] == [2, 3]
+    assert [blank["answer"] for blank in payload["blanks"]] == ["静止", "匀速直线运动", "同一物体", "相等", "相反"]
+
+
 def test_parse_mathtype_preview_as_inline_formula():
     paragraph = ET.fromstring(
         """
@@ -271,7 +326,10 @@ def test_parse_images_from_finished_course_sample_when_available():
     if not samples:
         pytest.skip("image course DOCX sample is not present")
 
-    payload = validate_finished_course_payload(parse_finished_course(samples[0]).to_payload())
+    raw_payload = parse_finished_course(samples[0]).to_payload()
+    if raw_payload["blanks"] and not raw_payload.get("distractor_groups"):
+        pytest.skip("image course DOCX sample has no self-contained distractor groups")
+    payload = validate_finished_course_payload(raw_payload)
     question_image_count = sum(len(question.get("images", [])) for question in payload["quick_practice"])
 
     assert payload["knowledge_images"] or question_image_count

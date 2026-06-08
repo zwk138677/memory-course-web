@@ -75,6 +75,31 @@ def test_reset_course_state_can_clear_upload_signature(monkeypatch):
     assert app._upload_widget_key() == "course_upload_3"
 
 
+def test_activate_course_payload_enters_show_stage(monkeypatch):
+    payload = {
+        "title": "二力平衡",
+        "knowledge_paragraphs": ["知识小题1.定义", "物体保持静止"],
+        "blanks": [{"id": "b001", "answer": "静止", "paragraph_index": 1, "start": 4, "end": 6}],
+        "distractor_groups": [
+            {"id": "dg001", "paragraph_indexes": [0, 1], "distractors": ["运动"], "source": "资料自带"}
+        ],
+        "quick_practice": [],
+    }
+    cid = course_id(payload)
+    fake_state = {
+        app._practice_result_key(cid): {"score": 0},
+        app._course_stage_key(cid): app.COURSE_STAGE_FILL,
+    }
+    monkeypatch.setattr(app.st, "session_state", fake_state)
+
+    activated_cid = app._activate_course_payload(payload)
+
+    assert activated_cid == cid
+    assert fake_state["course_payload"] is payload
+    assert app._practice_result_key(cid) not in fake_state
+    assert fake_state[app._course_stage_key(cid)] == app.COURSE_STAGE_SHOW
+
+
 def test_practice_sample_is_stable_until_reset(monkeypatch):
     fake_state = {}
     calls = []
@@ -120,18 +145,9 @@ def test_practice_accuracy_percent():
     assert app._practice_accuracy_percent(0, 0) == 0
 
 
-def test_only_ready_course_card_uses_logo_watermark():
-    assert ".course-ready-card::after" in app.APP_CSS
-    assert 'background: url("/app/static/shiguang-logo.png") center / contain no-repeat;' in app.APP_CSS
-    assert ".practice-result-card::after" not in app.APP_CSS
-    assert 'url("/app/static/shiguang-logo.png") right 1.35rem bottom .75rem' not in app.APP_CSS
-
-
-def test_logo_watermark_css_embeds_image_data():
-    css = app._logo_watermark_css()
-
-    assert ".course-ready-card::after" in css
-    assert "data:image/png;base64," in css
+def test_ready_generation_card_css_is_removed():
+    assert "course-ready-card" not in app.APP_CSS
+    assert "_logo_watermark_css" not in dir(app)
 
 
 def test_course_sections_use_standard_streamlit_containers():

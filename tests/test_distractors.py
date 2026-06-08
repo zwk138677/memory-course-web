@@ -1,8 +1,5 @@
 from pathlib import Path
 
-from src.memory_course_web.distractors import fallback_distractors_for_blank
-from src.memory_course_web import generation
-from src.memory_course_web.generation import DeepSeekConfig, generate_blank_distractors
 from src.memory_course_web.rendering import (
     _katex_inline_assets_html,
     build_word_bank,
@@ -20,12 +17,22 @@ def sample_payload():
     return {
         "title": "测试课程",
         "knowledge_paragraphs": [
+            "知识小题1.alpha",
             "alpha beta gamma",
             "delta epsilon",
         ],
         "blanks": [
-            {"id": "b001", "answer": "alpha", "paragraph_index": 0, "start": 0, "end": 5, "distractors": [], "distractor_source": ""},
-            {"id": "b002", "answer": "beta", "paragraph_index": 0, "start": 6, "end": 10, "distractors": [], "distractor_source": ""},
+            {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5},
+            {"id": "b002", "answer": "beta", "paragraph_index": 1, "start": 6, "end": 10},
+        ],
+        "distractor_groups": [
+            {
+                "id": "dg001",
+                "title": "知识小题1.alpha",
+                "paragraph_indexes": [0, 1, 2],
+                "distractors": ["delta-wrong", "theta-wrong"],
+                "source": "资料自带",
+            }
         ],
         "quick_practice": [
             {"category": "基础辨析", "stem": "alpha 对应哪个选项？", "correct": "A", "wrong": ["B", "C", "D"]}
@@ -36,53 +43,25 @@ def sample_payload():
 def three_blank_payload():
     return {
         "title": "测试课程",
-        "knowledge_paragraphs": ["alpha beta gamma"],
+        "knowledge_paragraphs": ["知识小题1.alpha", "alpha beta gamma"],
         "blanks": [
-            {"id": "b001", "answer": "alpha", "paragraph_index": 0, "start": 0, "end": 5, "distractors": [], "distractor_source": ""},
-            {"id": "b002", "answer": "beta", "paragraph_index": 0, "start": 6, "end": 10, "distractors": [], "distractor_source": ""},
-            {"id": "b003", "answer": "gamma", "paragraph_index": 0, "start": 11, "end": 16, "distractors": [], "distractor_source": ""},
+            {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5},
+            {"id": "b002", "answer": "beta", "paragraph_index": 1, "start": 6, "end": 10},
+            {"id": "b003", "answer": "gamma", "paragraph_index": 1, "start": 11, "end": 16},
+        ],
+        "distractor_groups": [
+            {
+                "id": "dg001",
+                "title": "知识小题1.alpha",
+                "paragraph_indexes": [0, 1],
+                "distractors": ["delta", "theta", "eta"],
+                "source": "资料自带",
+            }
         ],
         "quick_practice": [
             {"category": "基础辨析", "stem": "alpha 对应哪个选项？", "correct": "A", "wrong": ["B", "C", "D"]}
         ],
     }
-
-
-def install_fake_openai(monkeypatch, responses):
-    calls = []
-    response_queue = list(responses)
-
-    class FakeMessage:
-        def __init__(self, content):
-            self.content = content
-
-    class FakeChoice:
-        def __init__(self, content):
-            self.message = FakeMessage(content)
-
-    class FakeResponse:
-        def __init__(self, content):
-            self.choices = [FakeChoice(content)]
-
-    class FakeCompletions:
-        def create(self, **kwargs):
-            calls.append(kwargs)
-            if not response_queue:
-                raise AssertionError("unexpected DeepSeek call")
-            response = response_queue.pop(0)
-            if isinstance(response, Exception):
-                raise response
-            return FakeResponse(response)
-
-    class FakeOpenAI:
-        def __init__(self, *, api_key, base_url, timeout):
-            self.api_key = api_key
-            self.base_url = base_url
-            self.timeout = timeout
-            self.chat = type("FakeChat", (), {"completions": FakeCompletions()})()
-
-    monkeypatch.setattr(generation, "OpenAI", FakeOpenAI)
-    return calls
 
 
 def test_validate_distractor_list_rejects_answer_duplicate():
@@ -94,131 +73,49 @@ def test_validate_distractor_list_rejects_answer_duplicate():
         raise AssertionError("expected validation error")
 
 
-def test_code_fallback_generates_three_distinct_distractors():
+def test_payload_requires_self_contained_distractor_group_for_blank():
+    payload = sample_payload()
+    payload["distractor_groups"] = []
+
+    try:
+        validate_finished_course_payload(payload)
+    except Exception as exc:
+        assert "缺少“干扰项：”" in str(exc)
+    else:
+        raise AssertionError("expected validation error")
+
+
+def test_payload_rejects_group_distractor_equal_to_item_answer():
+    payload = sample_payload()
+    payload["distractor_groups"][0]["distractors"] = ["alpha"]
+
+    try:
+        validate_finished_course_payload(payload)
+    except Exception as exc:
+        assert "不能和本知识小题填空答案相同" in str(exc)
+    else:
+        raise AssertionError("expected validation error")
+
+
+def test_payload_accepts_shared_item_distractor_pool():
     payload = validate_finished_course_payload(sample_payload())
-    distractors = fallback_distractors_for_blank(payload["blanks"][0], payload)
 
-    assert len(distractors) == 3
-    assert len(set(distractors + [payload["blanks"][0]["answer"]])) == 4
-    assert not any(item.startswith("干扰项") for item in distractors)
+    assert payload["distractor_groups"][0]["distractors"] == ["delta-wrong", "theta-wrong"]
+    assert "distractors" not in payload["blanks"][0]
 
 
-def test_code_fallback_does_not_expose_placeholder_when_pool_is_sparse():
-    payload = validate_finished_course_payload(
-        {
-            "title": "empty",
-            "knowledge_paragraphs": ["A"],
-            "blanks": [
-                {"id": "b001", "answer": "A", "paragraph_index": 0, "start": 0, "end": 1, "distractors": [], "distractor_source": ""}
-            ],
-            "quick_practice": [{"category": "基础辨析", "stem": "A 是什么？", "correct": "A", "wrong": ["B", "C", "D"]}],
-        }
+def test_word_bank_uses_shared_item_distractor_pool():
+    payload = validate_finished_course_payload(three_blank_payload())
+
+    word_bank = build_word_bank(
+        payload["blanks"],
+        "shared-pool",
+        distractor_groups=payload["distractor_groups"],
+        paragraph_indexes=[0, 1],
     )
+    texts = {item["text"] for item in word_bank}
 
-    distractors = fallback_distractors_for_blank(payload["blanks"][0], payload)
-
-    assert len(distractors) == 3
-    assert not any(item.startswith("干扰项") for item in distractors)
-
-
-def test_no_api_key_uses_one_code_fallback_for_each_blank():
-    payload = generate_blank_distractors(sample_payload(), DeepSeekConfig(api_key=""))
-
-    assert {blank["distractor_source"] for blank in payload["blanks"]} == {"代码兜底"}
-    assert all(len(blank["distractors"]) == 1 for blank in payload["blanks"])
-    answer_keys = {blank["answer"].casefold() for blank in payload["blanks"]}
-    distractor_keys = {blank["distractors"][0].casefold() for blank in payload["blanks"]}
-    assert not answer_keys & distractor_keys
-    assert len(distractor_keys) == len(payload["blanks"])
-    assert not any(item.startswith("干扰项") for item in distractor_keys)
-
-
-def test_deepseek_partial_batch_keeps_valid_items_and_only_fallbacks_missing(monkeypatch):
-    calls = install_fake_openai(
-        monkeypatch,
-        [
-            '{"items":[{"id":"b001","distractor":"delta"}]}',
-            '{"items":[{"id":"b002","distractor":"theta"}]}',
-        ],
-    )
-
-    payload = generate_blank_distractors(three_blank_payload(), DeepSeekConfig(api_key="key"), batch_size=3)
-
-    assert [blank["distractor_source"] for blank in payload["blanks"]] == ["DeepSeek", "DeepSeek重试", "代码兜底"]
-    assert payload["blanks"][0]["distractors"] == ["delta"]
-    assert payload["blanks"][1]["distractors"] == ["theta"]
-    assert payload["distractor_summary"] == {"DeepSeek": 1, "DeepSeek重试": 1, "代码兜底": 1}
-    assert payload["distractor_diagnostics"]["failure_summary"]["缺项"] == 3
-    assert calls[0]["extra_body"] == {"thinking": {"type": "enabled"}}
-    assert calls[0]["reasoning_effort"] == "high"
-
-
-def test_deepseek_empty_first_attempt_then_retry_success_marks_retry(monkeypatch):
-    install_fake_openai(
-        monkeypatch,
-        [
-            "",
-            '{"items":[{"id":"b001","distractor":"delta"},{"id":"b002","distractor":"theta"}]}',
-        ],
-    )
-    progress_events = []
-
-    payload = generate_blank_distractors(
-        sample_payload(),
-        DeepSeekConfig(api_key="key"),
-        progress_callback=progress_events.append,
-    )
-
-    assert {blank["distractor_source"] for blank in payload["blanks"]} == {"DeepSeek重试"}
-    assert payload["distractor_summary"] == {"DeepSeek重试": 2}
-    assert payload["distractor_diagnostics"]["failure_summary"]["空返回"] == 1
-    assert [event["attempt"] for event in progress_events] == [1, 2]
-
-
-def test_deepseek_invalid_placeholder_after_retries_uses_code_fallback(monkeypatch):
-    install_fake_openai(
-        monkeypatch,
-        [
-            '{"items":[{"id":"b001","distractor":"干扰项23"}]}',
-            '{"items":[{"id":"b001","distractor":"干扰项24"}]}',
-        ],
-    )
-    payload = {
-        "title": "测试课程",
-        "knowledge_paragraphs": ["圆心角"],
-        "blanks": [
-            {"id": "b001", "answer": "圆心角", "paragraph_index": 0, "start": 0, "end": 3, "distractors": [], "distractor_source": ""}
-        ],
-        "quick_practice": [{"category": "基础辨析", "stem": "圆心角是什么？", "correct": "A", "wrong": ["B", "C", "D"]}],
-    }
-
-    result = generate_blank_distractors(payload, DeepSeekConfig(api_key="key"))
-
-    assert result["blanks"][0]["distractor_source"] == "代码兜底"
-    assert result["blanks"][0]["distractors"][0] != "干扰项23"
-    assert not result["blanks"][0]["distractors"][0].startswith("干扰项")
-    assert result["distractor_diagnostics"]["failure_summary"]["无效项"] == 2
-
-
-def test_word_bank_replaces_existing_placeholder_distractor():
-    blanks = [
-        {
-            "id": "b001",
-            "answer": "圆心角",
-            "paragraph_index": 0,
-            "start": 0,
-            "end": 3,
-            "distractors": ["干扰项23"],
-            "distractor_source": "代码兜底",
-        }
-    ]
-
-    word_bank = build_word_bank(blanks, "placeholder")
-    distractors = [item["text"] for item in word_bank if not item["is_answer"]]
-
-    assert len(distractors) == 1
-    assert distractors[0] != "干扰项23"
-    assert not distractors[0].startswith("干扰项")
+    assert {"alpha", "beta", "gamma", "delta", "theta", "eta"} <= texts
 
 
 def test_rendering_uses_character_positions_for_repeated_answers():
@@ -638,12 +535,15 @@ def test_practice_interaction_html_contains_latex_and_submit_payload():
 def test_fill_interaction_html_page_word_banks_only_include_page_options():
     paragraphs = ["1", "alpha", "2", "beta"]
     blanks = [
-        {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5, "distractors": ["delta"]},
-        {"id": "b002", "answer": "beta", "paragraph_index": 3, "start": 0, "end": 4, "distractors": ["theta"]},
+        {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5},
+        {"id": "b002", "answer": "beta", "paragraph_index": 3, "start": 0, "end": 4},
     ]
-    word_bank = build_word_bank(blanks, "paged-bank")
+    distractor_groups = [
+        {"id": "dg001", "paragraph_indexes": [0, 1], "distractors": ["delta"], "source": "资料自带"},
+        {"id": "dg002", "paragraph_indexes": [2, 3], "distractors": ["theta"], "source": "资料自带"},
+    ]
 
-    html = fill_interaction_html(paragraphs, blanks, [], word_bank)
+    html = fill_interaction_html(paragraphs, blanks, [], distractor_groups=distractor_groups)
 
     first_bank_start = html.index('class="word-bank-page active"')
     second_bank_start = html.index('class="word-bank-page"', first_bank_start + 1)
@@ -660,12 +560,15 @@ def test_fill_interaction_html_page_word_banks_only_include_page_options():
 def test_fill_interaction_html_paginates_knowledge_item_sections():
     paragraphs = ["知识小题1.物质构成", "alpha", "知识小题2.分子热运动", "beta"]
     blanks = [
-        {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5, "distractors": ["delta"]},
-        {"id": "b002", "answer": "beta", "paragraph_index": 3, "start": 0, "end": 4, "distractors": ["theta"]},
+        {"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5},
+        {"id": "b002", "answer": "beta", "paragraph_index": 3, "start": 0, "end": 4},
     ]
-    word_bank = build_word_bank(blanks, "physics-paged-bank")
+    distractor_groups = [
+        {"id": "dg001", "paragraph_indexes": [0, 1], "distractors": ["delta"], "source": "资料自带"},
+        {"id": "dg002", "paragraph_indexes": [2, 3], "distractors": ["theta"], "source": "资料自带"},
+    ]
 
-    html = fill_interaction_html(paragraphs, blanks, [], word_bank)
+    html = fill_interaction_html(paragraphs, blanks, [], distractor_groups=distractor_groups)
 
     assert 'data-page-target="0"' in html
     assert 'data-page-target="1"' in html

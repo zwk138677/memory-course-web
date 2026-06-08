@@ -12,8 +12,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .distractors import is_placeholder_distractor, neutral_fallback_candidates
-
 BLANK_SLOT_PLACEHOLDER = "______"
 PAGE_STANDALONE_RE = re.compile(r"^\s*(?:第\s*)?([0-9]{1,2}|[一二三四五六七八九十]{1,3})(?:[.．、])?\s*$")
 PAGE_PREFIX_RE = re.compile(
@@ -75,21 +73,25 @@ def _clean_option_text(value: Any) -> str:
     return " ".join(str(value).split()).strip()
 
 
-def _fallback_distractor_text(index: int, used: set[str], answer_keys: set[str]) -> str:
-    for candidate in neutral_fallback_candidates(index):
-        key = candidate.casefold()
-        if key not in used and key not in answer_keys:
-            return candidate
-    suffix = index
-    while True:
-        candidate = f"相关概念{suffix}"
-        key = candidate.casefold()
-        if key not in used and key not in answer_keys:
-            return candidate
-        suffix += 1
+def _matching_distractor_groups(
+    distractor_groups: list[dict[str, Any]] | None,
+    paragraph_indexes: set[int],
+) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    for group in distractor_groups or []:
+        group_paragraphs = {int(index) for index in group.get("paragraph_indexes", [])}
+        if group_paragraphs & paragraph_indexes:
+            groups.append(group)
+    return groups
 
 
-def build_word_bank(blanks: list[dict[str, Any]], salt: str, *, distractor_ratio: float = 1.0) -> list[dict[str, Any]]:
+def build_word_bank(
+    blanks: list[dict[str, Any]],
+    salt: str,
+    *,
+    distractor_groups: list[dict[str, Any]] | None = None,
+    paragraph_indexes: list[int] | None = None,
+) -> list[dict[str, Any]]:
     """Build one shuffled word-bank option list.
 
     Options are counted by blank, not by unique text. If two blanks share the
@@ -97,6 +99,7 @@ def build_word_bank(blanks: list[dict[str, Any]], salt: str, *, distractor_ratio
     """
 
     answer_keys = {_clean_option_text(blank.get("answer", "")).casefold() for blank in blanks}
+    paragraph_set = set(paragraph_indexes or [int(blank.get("paragraph_index", -1)) for blank in blanks])
     options: list[dict[str, Any]] = []
     used_distractor_keys: set[str] = set()
 
@@ -113,23 +116,30 @@ def build_word_bank(blanks: list[dict[str, Any]], salt: str, *, distractor_ratio
             }
         )
 
-        distractor = ""
-        for candidate in blank.get("distractors", []):
-            cleaned = _clean_option_text(candidate)
-            key = cleaned.casefold()
-            if cleaned and not is_placeholder_distractor(cleaned) and key not in answer_keys and key not in used_distractor_keys:
-                distractor = cleaned
-                break
-        if not distractor:
-            distractor = _fallback_distractor_text(index, used_distractor_keys, answer_keys)
-        used_distractor_keys.add(distractor.casefold())
+    distractor_entries: list[tuple[str, str, str]] = []
+    if distractor_groups is not None:
+        for group_index, group in enumerate(_matching_distractor_groups(distractor_groups, paragraph_set), start=1):
+            for distractor_index, candidate in enumerate(group.get("distractors", []), start=1):
+                distractor_entries.append((f"group-{group.get('id') or group_index}-{distractor_index}", candidate, ""))
+    else:
+        for index, blank in enumerate(blanks, start=1):
+            blank_id = str(blank.get("id") or f"b{index:03d}")
+            for distractor_index, candidate in enumerate(blank.get("distractors", []), start=1):
+                distractor_entries.append((f"distractor-{blank_id}-{distractor_index}", candidate, blank_id))
+
+    for option_id, candidate, source_blank_id in distractor_entries:
+        cleaned = _clean_option_text(candidate)
+        key = cleaned.casefold()
+        if not cleaned or key in answer_keys or key in used_distractor_keys:
+            continue
+        used_distractor_keys.add(key)
         options.append(
             {
-                "option_id": f"distractor-{blank_id}",
-                "text": distractor,
+                "option_id": option_id,
+                "text": cleaned,
                 "is_answer": False,
                 "blank_id": "",
-                "source_blank_id": blank_id,
+                "source_blank_id": source_blank_id,
             }
         )
 
@@ -967,7 +977,8 @@ def fill_interaction_html(
     knowledge_paragraphs: list[str],
     blanks: list[dict[str, Any]],
     images: list[dict[str, Any]] | None,
-    word_bank: list[dict[str, Any]],
+    word_bank: list[dict[str, Any]] | None = None,
+    distractor_groups: list[dict[str, Any]] | None = None,
     course_cid: str = "",
 ) -> str:
     page_groups = _fill_page_groups(knowledge_paragraphs)
@@ -978,8 +989,16 @@ def fill_interaction_html(
         paragraph_indexes = page["paragraph_indexes"]
         paragraph_set = set(paragraph_indexes)
         page_blanks = [blank for blank in blanks if int(blank.get("paragraph_index", -1)) in paragraph_set]
-        page_blank_ids = {str(blank.get("id", "")) for blank in page_blanks}
-        page_word_bank = [option for option in word_bank if str(option.get("source_blank_id", "")) in page_blank_ids]
+        if distractor_groups is not None:
+            page_word_bank = build_word_bank(
+                page_blanks,
+                f"{course_cid or 'course'}-page-{page_index}",
+                distractor_groups=distractor_groups,
+                paragraph_indexes=paragraph_indexes,
+            )
+        else:
+            page_blank_ids = {str(blank.get("id", "")) for blank in page_blanks}
+            page_word_bank = [option for option in word_bank or [] if str(option.get("source_blank_id", "")) in page_blank_ids]
         active_class = " active" if page_index == 0 else ""
         page_sections.append(
             f'<section class="fill-page{active_class}" data-page-index="{page_index}">'

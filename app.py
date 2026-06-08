@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import base64
-from functools import lru_cache
 import hashlib
 import html
-import os
 from pathlib import Path
 import random
 import tempfile
@@ -14,14 +11,13 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from src.memory_course_web.finished_course_parser import parse_finished_course
-from src.memory_course_web.generation import DeepSeekConfig, generate_blank_distractors
-from src.memory_course_web.rendering import build_word_bank, course_id, fill_interaction_html, knowledge_html, practice_interaction_html, stable_options
+from src.memory_course_web.rendering import course_id, fill_interaction_html, knowledge_html, practice_interaction_html, stable_options
 from src.memory_course_web.validation import validate_finished_course_payload
 
 
 st.set_page_config(page_title="成品背记资料学习页", layout="wide")
 
-PARSER_SCHEMA_VERSION = "2026-06-03-physics-ui-v4"
+PARSER_SCHEMA_VERSION = "2026-06-08-self-distractors-v1"
 UPLOAD_NONCE_KEY = "course_upload_nonce"
 MATH_CATEGORY_LABELS = {"基础辨析", "易错辨析", "简单应用"}
 PRACTICE_SAMPLE_SIZE = 5
@@ -71,48 +67,12 @@ h1, h2, h3 {
   font-size: .96rem;
   margin-bottom: 1.15rem;
 }
-.course-ready-card,
 .learning-card {
   border: 1px solid #ead7ad;
   border-radius: 8px;
   background:
     linear-gradient(180deg, rgba(255, 253, 247, .98), rgba(255, 250, 239, .98));
   box-shadow: 0 14px 32px rgba(111, 78, 32, .08), inset 0 1px 0 rgba(255, 255, 255, .9);
-}
-.course-ready-card {
-  padding: 1.08rem 1.18rem;
-  margin: .85rem 0 1rem;
-}
-.course-ready-card h2 {
-  margin: .15rem 0 .2rem;
-  font-size: 1.35rem;
-  line-height: 1.45;
-}
-.course-ready-card p {
-  margin: 0;
-  color: #7b674c;
-}
-.course-ready-card {
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
-}
-.course-ready-card > * {
-  position: relative;
-  z-index: 1;
-}
-.course-ready-card::after {
-  content: "";
-  position: absolute;
-  right: 1.35rem;
-  bottom: .75rem;
-  width: 230px;
-  height: 74px;
-  background: url("/app/static/shiguang-logo.png") center / contain no-repeat;
-  opacity: .13;
-  filter: none;
-  pointer-events: none;
-  z-index: 0;
 }
 .course-title-card {
   padding: 1.05rem 1.25rem;
@@ -429,56 +389,9 @@ div[role="radiogroup"] label:hover {
   .learning-card {
     padding: .85rem;
   }
-  .course-ready-card::after {
-    right: .75rem;
-    bottom: .55rem;
-    width: 145px;
-    height: 48px;
-    opacity: .12;
-    filter: none;
-  }
 }
 </style>
 """
-
-
-@lru_cache(maxsize=1)
-def _logo_watermark_css() -> str:
-    logo_path = Path(__file__).parent / "static" / "shiguang-logo.png"
-    try:
-        encoded = base64.b64encode(logo_path.read_bytes()).decode("ascii")
-    except OSError:
-        return ""
-    return (
-        '<style>'
-        '.course-ready-card::after { '
-        f'background: url("data:image/png;base64,{encoded}") center / contain no-repeat; '
-        '}'
-        '</style>'
-    )
-
-
-def _secret_or_env(name: str, default: str = "") -> str:
-    try:
-        value = st.secrets.get(name, "")
-    except Exception:
-        value = ""
-    return str(value or os.getenv(name, default)).strip()
-
-
-def _deepseek_config() -> DeepSeekConfig:
-    return DeepSeekConfig(
-        api_key=_secret_or_env("DEEPSEEK_API_KEY"),
-        base_url=_secret_or_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        model=_secret_or_env("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-    )
-
-
-def _all_course_images(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    images = list(payload.get("knowledge_images", []))
-    for question in payload.get("quick_practice", []):
-        images.extend(question.get("images", []))
-    return images
 
 
 def _tag_parser_schema(payload: dict[str, Any]) -> dict[str, Any]:
@@ -662,6 +575,15 @@ def _reset_course_state(*, clear_upload_signature: bool = False, reset_uploader:
         st.session_state[UPLOAD_NONCE_KEY] = int(st.session_state.get(UPLOAD_NONCE_KEY, 0)) + 1
 
 
+def _activate_course_payload(payload: dict[str, Any]) -> str:
+    st.session_state["course_payload"] = payload
+    cid = course_id(payload)
+    _clear_practice_state(cid)
+    _clear_fill_progress(cid)
+    _set_course_stage(cid, COURSE_STAGE_SHOW)
+    return cid
+
+
 def _consume_flow_action(cid: str) -> None:
     action = str(st.query_params.get("flow_action", ""))
     flow_course = str(st.query_params.get("flow_course", ""))
@@ -692,13 +614,12 @@ def _render_fill_tab(payload: dict[str, Any]) -> None:
         st.info("这份资料没有识别到 Word 下划线填空。")
         return
 
-    word_bank = build_word_bank(blanks, cid, distractor_ratio=1.0)
     result = FILL_INTERACTION_COMPONENT(
         html=fill_interaction_html(
             payload["knowledge_paragraphs"],
             blanks,
             payload.get("knowledge_images", []),
-            word_bank,
+            distractor_groups=payload.get("distractor_groups", []),
             course_cid=cid,
         ),
         default={},
@@ -815,7 +736,6 @@ def _render_course(payload: dict[str, Any]) -> None:
 
 def main() -> None:
     st.markdown(APP_CSS, unsafe_allow_html=True)
-    st.markdown(_logo_watermark_css(), unsafe_allow_html=True)
 
     active_payload = st.session_state.get("course_payload")
     if active_payload is not None and _payload_needs_reparse(active_payload):
@@ -856,51 +776,12 @@ def main() -> None:
                 return
             st.session_state["uploaded_signature"] = upload_signature
             st.session_state["parsed_payload"] = parsed_payload
+            _activate_course_payload(parsed_payload)
             st.rerun()
 
-    all_images = _all_course_images(parsed_payload)
-    unsupported_images = [image for image in all_images if not image.get("renderable")]
-    if unsupported_images:
-        st.caption("部分 Word 专用格式配图会先显示为占位提示。")
-
-    config = _deepseek_config()
-    if not config.api_key:
-        st.caption("未检测到 DeepSeek Key：填空干扰项会使用代码兜底生成。")
-    st.markdown(
-        '<section class="course-ready-card">'
-        '<p>已识别课程</p>'
-        f'<h2>{html.escape(str(parsed_payload["title"]))}</h2>'
-        '<p>生成填空干扰项后即可开始学习。</p>'
-        '</section>',
-        unsafe_allow_html=True,
-    )
-    if st.button("生成填空干扰项并开始学习", type="primary"):
-        progress_bar = st.progress(0.0)
-        status_slot = st.empty()
-
-        def _progress_update(event: dict[str, Any]) -> None:
-            batches = max(1, int(event.get("batches", 1)))
-            batch = max(1, int(event.get("batch", 1)))
-            attempt = max(1, int(event.get("attempt", 1)))
-            pending = max(0, int(event.get("pending", 0)))
-            attempt_fraction = 0.0 if attempt == 1 else 0.45
-            progress = min(0.98, max(0.02, ((batch - 1) + attempt_fraction) / batches))
-            progress_bar.progress(progress)
-            status_slot.info(f"正在生成第 {batch}/{batches} 批，第 {attempt} 次尝试，待处理 {pending} 项...")
-
-        try:
-            status_slot.info("正在准备 DeepSeek 高质量干扰项生成...")
-            payload = _tag_parser_schema(generate_blank_distractors(parsed_payload, config, progress_callback=_progress_update))
-            progress_bar.progress(1.0)
-            status_slot.success("干扰项生成完成，正在进入学习页...")
-            st.session_state["course_payload"] = payload
-            generated_cid = course_id(payload)
-            _clear_practice_state(generated_cid)
-            _clear_fill_progress(generated_cid)
-            _set_course_stage(generated_cid, COURSE_STAGE_SHOW)
-            st.rerun()
-        except Exception as exc:
-            st.error(f"生成填空干扰项失败：{exc}")
+    if parsed_payload is not None:
+        _activate_course_payload(parsed_payload)
+        st.rerun()
 
 
 if __name__ == "__main__":

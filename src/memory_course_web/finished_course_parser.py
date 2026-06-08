@@ -78,6 +78,8 @@ PHYSICS_KNOWLEDGE_POINT_RE = re.compile(r"^【知识点\s*\d+】$")
 KNOWLEDGE_ITEM_RE = re.compile(r"^知识小题\s*\d+\s*[.．、]")
 CHINESE_SECTION_RE = re.compile(r"^[一二三四五六七八九十]+[、.．]\s*(.+?)\s*$")
 LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*[．.、]\s*")
+DISTRACTOR_RE = re.compile(r"^\s*干扰项\s*[：:]\s*(.*)$")
+DISTRACTOR_SPLIT_RE = re.compile(r"[；;]")
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,7 @@ class FinishedCourse:
     knowledge_paragraphs: list[str]
     knowledge_images: list[dict[str, Any]]
     blanks: list[dict[str, Any]]
+    distractor_groups: list[dict[str, Any]]
     quick_practice: list[dict[str, Any]]
     source_name: str
     structure: str
@@ -143,6 +146,7 @@ class FinishedCourse:
             "knowledge_text": "\n".join(self.knowledge_paragraphs),
             "knowledge_images": self.knowledge_images,
             "blanks": self.blanks,
+            "distractor_groups": self.distractor_groups,
             "quick_practice": self.quick_practice,
             "source_name": self.source_name,
             "structure": self.structure,
@@ -691,6 +695,81 @@ def _is_knowledge_item_heading(text: str) -> bool:
     return bool(KNOWLEDGE_ITEM_RE.match(text.strip()))
 
 
+def _strip_distractor_marker(text: str) -> str | None:
+    match = DISTRACTOR_RE.match(text.strip())
+    return match.group(1).strip() if match else None
+
+
+def _split_distractor_text(texts: list[str]) -> list[str]:
+    seen: set[str] = set()
+    items: list[str] = []
+    for text in texts:
+        for item in DISTRACTOR_SPLIT_RE.split(text):
+            cleaned = " ".join(item.split()).strip()
+            key = cleaned.casefold()
+            if cleaned and key not in seen:
+                seen.add(key)
+                items.append(cleaned)
+    return items
+
+
+def _extract_distractor_groups(knowledge: list[ParsedParagraph]) -> tuple[list[ParsedParagraph], list[dict[str, Any]]]:
+    cleaned: list[ParsedParagraph] = []
+    groups: list[dict[str, Any]] = []
+    current_item: dict[str, Any] | None = None
+    index = 0
+
+    def finish_current_item() -> None:
+        nonlocal current_item
+        if current_item is None:
+            return
+        distractors = current_item.get("distractors", [])
+        if distractors:
+            groups.append(
+                {
+                    "id": f"dg{len(groups) + 1:03d}",
+                    "title": current_item.get("title", ""),
+                    "paragraph_indexes": list(range(int(current_item["start"]), len(cleaned))),
+                    "distractors": distractors,
+                    "source": "资料自带",
+                }
+            )
+        current_item = None
+
+    while index < len(knowledge):
+        paragraph = knowledge[index]
+        text = paragraph.text.strip()
+
+        if _is_knowledge_item_heading(text):
+            finish_current_item()
+            current_item = {"title": text, "start": len(cleaned), "distractors": []}
+            cleaned.append(paragraph)
+            index += 1
+            continue
+
+        distractor_text = _strip_distractor_marker(text)
+        if distractor_text is not None:
+            if current_item is None:
+                current_item = {"title": "", "start": 0, "distractors": []}
+            collected = [distractor_text]
+            index += 1
+            while index < len(knowledge):
+                next_text = knowledge[index].text.strip()
+                if _is_knowledge_item_heading(next_text) or _is_practice_boundary(next_text):
+                    break
+                next_distractor_text = _strip_distractor_marker(next_text)
+                collected.append(next_distractor_text if next_distractor_text is not None else next_text)
+                index += 1
+            current_item["distractors"].extend(_split_distractor_text(collected))
+            continue
+
+        cleaned.append(paragraph)
+        index += 1
+
+    finish_current_item()
+    return cleaned, groups
+
+
 def _physics_section_title(text: str) -> str:
     match = CHINESE_SECTION_RE.match(text.strip())
     return match.group(1).strip() if match else ""
@@ -880,8 +959,6 @@ def _build_blanks(knowledge_paragraphs: list[ParsedParagraph]) -> list[dict[str,
                     "paragraph_index": paragraph_index,
                     "start": span.start,
                     "end": span.end,
-                    "distractors": [],
-                    "distractor_source": "",
                 }
             )
     return blanks
@@ -961,7 +1038,7 @@ def parse_finished_course(docx_path: Path | str) -> FinishedCourse:
     if knowledge_end <= knowledge_start:
         raise ValueError("没有识别到知识展示正文。")
 
-    knowledge = paragraphs[knowledge_start:knowledge_end]
+    knowledge, distractor_groups = _extract_distractor_groups(paragraphs[knowledge_start:knowledge_end])
     knowledge_texts = [paragraph.text for paragraph in knowledge]
     if not any(text.strip() for text in knowledge_texts):
         raise ValueError("知识展示正文为空。")
@@ -977,6 +1054,7 @@ def parse_finished_course(docx_path: Path | str) -> FinishedCourse:
         knowledge_paragraphs=knowledge_texts,
         knowledge_images=knowledge_images,
         blanks=blanks,
+        distractor_groups=distractor_groups,
         quick_practice=questions,
         source_name=path.name,
         structure=structure,

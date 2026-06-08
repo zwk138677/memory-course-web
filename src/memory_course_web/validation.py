@@ -98,6 +98,67 @@ def validate_blank_distractor_list(answer: str, distractors: Any, field_name: st
     return cleaned
 
 
+def _normalize_distractor_groups(groups: Any, paragraph_count: int) -> list[dict[str, Any]]:
+    if groups is None:
+        groups = []
+    if not isinstance(groups, list):
+        raise PayloadValidationError("distractor_groups 必须是数组。")
+
+    normalized: list[dict[str, Any]] = []
+    claimed_paragraphs: dict[int, int] = {}
+    for index, group in enumerate(groups, start=1):
+        if not isinstance(group, dict):
+            raise PayloadValidationError(f"第 {index} 个知识小题干扰项组必须是对象。")
+        raw_indexes = group.get("paragraph_indexes")
+        if not isinstance(raw_indexes, list) or not raw_indexes:
+            raise PayloadValidationError(f"第 {index} 个知识小题干扰项组必须包含段落范围。")
+        paragraph_indexes: list[int] = []
+        for raw_index in raw_indexes:
+            try:
+                paragraph_index = int(raw_index)
+            except (TypeError, ValueError) as exc:
+                raise PayloadValidationError(f"第 {index} 个知识小题干扰项组包含无效段落位置。") from exc
+            if paragraph_index < 0 or paragraph_index >= paragraph_count:
+                raise PayloadValidationError(f"第 {index} 个知识小题干扰项组段落位置越界。")
+            if paragraph_index in claimed_paragraphs:
+                raise PayloadValidationError(f"第 {index} 个知识小题干扰项组和第 {claimed_paragraphs[paragraph_index]} 组段落范围重叠。")
+            claimed_paragraphs[paragraph_index] = index
+            paragraph_indexes.append(paragraph_index)
+
+        distractors = validate_blank_distractor_list("", group.get("distractors"), f"第 {index} 个知识小题干扰项组")
+        normalized.append(
+            {
+                "id": optional_text(group.get("id"), f"第 {index} 个知识小题干扰项组 ID") or f"dg{index:03d}",
+                "title": optional_text(group.get("title"), f"第 {index} 个知识小题标题"),
+                "paragraph_indexes": paragraph_indexes,
+                "distractors": distractors,
+                "source": optional_text(group.get("source"), f"第 {index} 个知识小题干扰项来源") or "资料自带",
+            }
+        )
+    return normalized
+
+
+def _validate_blank_group_coverage(blanks: list[dict[str, Any]], groups: list[dict[str, Any]]) -> None:
+    groups_by_paragraph: dict[int, dict[str, Any]] = {}
+    for group in groups:
+        for paragraph_index in group["paragraph_indexes"]:
+            groups_by_paragraph[paragraph_index] = group
+
+    answers_by_group_id: dict[str, set[str]] = {}
+    for blank in blanks:
+        group = groups_by_paragraph.get(int(blank["paragraph_index"]))
+        if group is None:
+            raise PayloadValidationError(f"第 {blank['id']} 个填空所在知识小题缺少“干扰项：”。")
+        answers_by_group_id.setdefault(str(group["id"]), set()).add(str(blank["answer"]).strip().casefold())
+
+    for group in groups:
+        answer_keys = answers_by_group_id.get(str(group["id"]), set())
+        for distractor in group["distractors"]:
+            if distractor.strip().casefold() in answer_keys:
+                title = f"“{group['title']}”" if group.get("title") else str(group["id"])
+                raise PayloadValidationError(f"{title} 的干扰项不能和本知识小题填空答案相同。")
+
+
 def validate_finished_course_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise PayloadValidationError("课程数据必须是对象。")
@@ -164,10 +225,6 @@ def validate_finished_course_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if location in seen_locations:
             raise PayloadValidationError(f"第 {index} 个填空项位置重复。")
         seen_locations.add(location)
-        distractors = blank.get("distractors", [])
-        source = str(blank.get("distractor_source", "")).strip()
-        if distractors:
-            distractors = validate_blank_distractor_list(answer, distractors, f"第 {index} 个填空干扰项")
         normalized_blanks.append(
             {
                 "id": str(blank.get("id") or f"b{index:03d}"),
@@ -175,11 +232,14 @@ def validate_finished_course_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "paragraph_index": paragraph_index,
                 "start": start,
                 "end": end,
-                "distractors": distractors,
-                "distractor_source": source,
             }
         )
     normalized["blanks"] = normalized_blanks
+
+    distractor_groups = _normalize_distractor_groups(payload.get("distractor_groups", []), len(normalized["knowledge_paragraphs"]))
+    if normalized_blanks:
+        _validate_blank_group_coverage(normalized_blanks, distractor_groups)
+    normalized["distractor_groups"] = distractor_groups
 
     questions = payload.get("quick_practice")
     if not isinstance(questions, list) or not questions:
