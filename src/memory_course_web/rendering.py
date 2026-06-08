@@ -243,8 +243,59 @@ def _inline_formula_text_html(formula_text: str) -> str:
     return f'<span class="inline-formula-text">{html.escape(formula_text)}</span>'
 
 
-_SIMPLE_TEXT_FRACTION_RE = re.compile(r"(?<![0-9A-Za-z/])([0-9A-Za-z]+)\s*/\s*([0-9A-Za-z]+)(?![0-9A-Za-z/])")
+_SIMPLE_TEXT_FRACTION_RE = re.compile(r"(?<![0-9A-Za-z/])(\d+)\s*/\s*(\d+)(?![0-9A-Za-z/])")
 _LATEX_DELIMITERS = (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$"))
+_PLAIN_MATH_TOKEN_RE = re.compile(
+    r"(?<![0-9A-Za-z\\])(?P<abs>\|[A-Za-z]\|)(?![0-9A-Za-z])"
+    r"|(?<![0-9A-Za-z\\])(?P<sqrt>√\s*[A-Za-z0-9]+)"
+    r"|(?<![0-9A-Za-z\\])(?P<signed>[+\-±]\s*[A-Za-z])(?![0-9A-Za-z])"
+    r"|(?<![0-9A-Za-z\\])(?P<sup>[A-Za-z]\s*[²³](?:\s*(?:>=|<=|!=|[=<>≤≥≠])\s*-?\s*\d+)?)"
+    r"|(?<![0-9A-Za-z\\])(?P<expr>[A-Za-z]\s*(?:(?:>=|<=|!=|[+\-=<>≤≥≠^])\s*-?\s*[A-Za-z0-9])+)"
+    r"|(?<![0-9A-Za-z\\])(?P<pi>π(?:\s*[+\-]\s*(?:\d+|[A-Za-z]))?)"
+    r"|(?<![0-9A-Za-z\\.])(?P<zero>0)(?![0-9A-Za-z\\.])"
+    r"|(?<![0-9A-Za-z\\])(?P<var>[a-z])(?![0-9A-Za-z])"
+)
+
+
+def _plain_math_token_to_latex(token: str) -> str:
+    expression = re.sub(r"\s+", " ", token.strip())
+    expression = expression.replace("²", "^2").replace("³", "^3")
+    expression = expression.replace(">=", r"\ge ").replace("<=", r"\le ").replace("!=", r"\ne ")
+    expression = expression.replace("≥", r"\ge ").replace("≤", r"\le ").replace("≠", r"\ne ")
+    expression = re.sub(r"√\s*([A-Za-z0-9]+)", r"\\sqrt{\1}", expression)
+    expression = expression.replace("π", r"\pi")
+    expression = re.sub(r"\s*([+\-*/=<>^])\s*", r"\1", expression)
+    expression = re.sub(r"\\(ge|le|ne)\s+", r"\\\1 ", expression)
+    expression = re.sub(r"\s+", " ", expression).strip()
+    return f"${expression}$"
+
+
+def _plain_math_replacement(match: re.Match[str]) -> str:
+    token = match.group(0)
+    before = match.string[: match.start()]
+    after = match.string[match.end() :]
+    next_text = after.lstrip()
+    previous_text = before.rstrip()
+    if match.lastgroup == "expr" and (next_text.startswith("/") or previous_text.endswith("/")):
+        return token
+    if match.lastgroup == "var":
+        if next_text[:1] in {"=", "<", ">", "≤", "≥", "≠"}:
+            return token
+        if next_text.startswith("/") or previous_text.endswith("/"):
+            return token
+        if previous_text and previous_text[-1].isdigit():
+            return token
+        previous_word = re.search(r"([A-Za-z]+)\s*$", before)
+        next_word = re.match(r"\s*([A-Za-z]+)", after)
+        if previous_word and next_word:
+            return token
+    return _plain_math_token_to_latex(token)
+
+
+def _normalize_plain_math_for_latex(text: str) -> str:
+    """Wrap obvious bare math tokens for display while leaving prose alone."""
+
+    return _PLAIN_MATH_TOKEN_RE.sub(_plain_math_replacement, text)
 
 
 def _plain_text_with_fractions_html(text: str) -> str:
@@ -301,7 +352,12 @@ def _text_with_latex_and_fractions_html(text: str) -> str:
         if is_latex:
             parts.append(html.escape(segment))
         else:
-            parts.append(_plain_text_with_fractions_html(segment))
+            normalized = _normalize_plain_math_for_latex(segment)
+            for nested_is_latex, nested_segment in _split_latex_segments(normalized):
+                if nested_is_latex:
+                    parts.append(html.escape(nested_segment))
+                else:
+                    parts.append(_plain_text_with_fractions_html(nested_segment))
     return "".join(parts)
 
 
@@ -424,6 +480,22 @@ def _group_by_paragraph(items: list[dict[str, Any]]) -> dict[int, list[dict[str,
     return by_paragraph
 
 
+def _is_knowledge_item_heading(paragraph: str) -> bool:
+    return bool(KNOWLEDGE_ITEM_PAGE_RE.match(str(paragraph or "").strip()))
+
+
+def _knowledge_paragraph_block(paragraph: str, paragraph_html: str, image_html: str = "") -> str:
+    if _is_knowledge_item_heading(paragraph):
+        return (
+            '<div class="knowledge-item-heading" role="heading" aria-level="3">'
+            '<span class="knowledge-item-heading-marker" aria-hidden="true"></span>'
+            f'<span class="knowledge-item-heading-text">{paragraph_html}</span>'
+            "</div>"
+            + image_html
+        )
+    return f"<p>{paragraph_html}</p>{image_html}"
+
+
 def knowledge_html(
     knowledge_paragraphs: list[str],
     blanks: list[dict[str, Any]],
@@ -442,7 +514,7 @@ def knowledge_html(
         )
         image_html = image_group_html(paragraph_images)
         if paragraph_html:
-            rendered.append(f"<p>{paragraph_html}</p>{image_html}")
+            rendered.append(_knowledge_paragraph_block(paragraph, paragraph_html, image_html))
         elif image_html:
             rendered.append(image_html)
     return _katex_inline_assets_html() + '<div class="knowledge-body">' + "\n".join(rendered) + "</div>"
@@ -472,7 +544,7 @@ def fill_sheet_html(
         )
         image_html = image_group_html(paragraph_images)
         if paragraph_html:
-            rendered.append(f"<p>{paragraph_html}</p>{image_html}")
+            rendered.append(_knowledge_paragraph_block(paragraph, paragraph_html, image_html))
         elif image_html:
             rendered.append(image_html)
     return '<div class="fill-sheet">' + "\n".join(rendered) + "</div>"
@@ -542,7 +614,7 @@ def _fill_sheet_page_html(
         )
         image_html = image_group_html(paragraph_images)
         if paragraph_html:
-            rendered.append(f"<p>{paragraph_html}</p>{image_html}")
+            rendered.append(_knowledge_paragraph_block(paragraph, paragraph_html, image_html))
         elif image_html:
             rendered.append(image_html)
     return '<div class="fill-sheet">' + "\n".join(rendered) + "</div>"
@@ -573,13 +645,15 @@ def word_bank_html(word_bank: list[dict[str, Any]]) -> str:
     items = []
     for option in word_bank:
         number = int(option["number"])
-        text = _text_with_latex_and_fractions_html(str(option["text"]))
+        raw_text = str(option["text"])
+        text = _text_with_latex_and_fractions_html(raw_text)
         option_id = html.escape(str(option["option_id"]), quote=True)
         source_blank_id = html.escape(str(option.get("source_blank_id", "")), quote=True)
         is_answer = "true" if option.get("is_answer") else "false"
         items.append(
             '<button class="word-bank-item" type="button" draggable="true" '
-            f'data-option-id="{option_id}" data-text="{html.escape(str(option["text"]), quote=True)}" '
+            f'data-option-id="{option_id}" data-text="{html.escape(raw_text, quote=True)}" '
+            f'data-display-html="{html.escape(text, quote=True)}" '
             f'data-source-blank-id="{source_blank_id}" data-is-answer="{is_answer}">'
             f'<span class="word-bank-number">{number}</span>'
             f'<span class="word-bank-text">{text}</span>'
@@ -1041,6 +1115,34 @@ def fill_interaction_html(
     line-height: 2.16;
     margin: 0 0 .85rem;
   }}
+  .knowledge-item-heading {{
+    display: flex;
+    align-items: center;
+    gap: .58rem;
+    margin: 1.08rem 0 .4rem;
+    color: #6f4304;
+    font-size: 1.04rem;
+    font-weight: 800;
+    line-height: 1.45;
+    letter-spacing: 0;
+  }}
+  .knowledge-item-heading:first-child {{
+    margin-top: .18rem;
+  }}
+  .knowledge-item-heading-marker {{
+    flex: 0 0 5px;
+    width: 5px;
+    height: 1.45rem;
+    border-radius: 2px;
+    background: #d5961e;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .75) inset;
+  }}
+  .knowledge-item-heading-text {{
+    display: inline-block;
+  }}
+  .knowledge-item-heading + p {{
+    margin-top: 0;
+  }}
   .word-blank {{
     display: inline-flex;
     align-items: center;
@@ -1346,7 +1448,13 @@ def fill_interaction_html(
     blank.dataset.filledText = rawText;
     blank.classList.add("filled");
     const answer = blank.querySelector(".word-blank-answer");
-    if (answer) answer.textContent = rawText;
+    if (answer) {{
+      if (option.dataset.displayHtml) {{
+        answer.innerHTML = option.dataset.displayHtml;
+      }} else {{
+        answer.textContent = rawText;
+      }}
+    }}
     renderLatex(blank);
     option.classList.add("used");
     setSelected(null);
@@ -1436,7 +1544,14 @@ def fill_interaction_html(
       blank.classList.remove("filled", "correct", "wrong", "unfilled");
       (saved.classes || []).forEach(name => blank.classList.add(name));
       const answer = blank.querySelector(".word-blank-answer");
-      if (answer) answer.textContent = saved.answerText || "";
+      if (answer) {{
+        const option = saved.optionId ? optionById(saved.optionId) : null;
+        if (option && option.dataset.displayHtml) {{
+          answer.innerHTML = option.dataset.displayHtml;
+        }} else {{
+          answer.textContent = saved.answerText || "";
+        }}
+      }}
       renderLatex(blank);
       if (saved.optionId) {{
         const option = optionById(saved.optionId);

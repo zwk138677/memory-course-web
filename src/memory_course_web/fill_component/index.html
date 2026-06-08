@@ -186,7 +186,14 @@
         (saved.classes || []).forEach(name => blank.classList.add(name));
         const answer = blank.querySelector(".word-blank-answer");
         if (answer) {
-          answer.textContent = saved.answerText || "";
+          const option = saved.optionId
+            ? root.querySelector(`.word-bank-item[data-option-id="${CSS.escape(saved.optionId)}"]`)
+            : null;
+          if (option && option.dataset.displayHtml) {
+            answer.innerHTML = option.dataset.displayHtml;
+          } else {
+            answer.textContent = saved.answerText || "";
+          }
         }
         if (saved.optionId) {
           const option = root.querySelector(`.word-bank-item[data-option-id="${CSS.escape(saved.optionId)}"]`);

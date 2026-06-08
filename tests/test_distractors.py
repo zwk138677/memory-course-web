@@ -129,6 +129,31 @@ def test_rendering_uses_character_positions_for_repeated_answers():
     assert "A B <span" in html
 
 
+def test_knowledge_item_headings_render_with_section_style():
+    html = knowledge_html(["知识小题1.定义", "alpha"], [])
+
+    assert '<div class="knowledge-item-heading" role="heading" aria-level="3">' in html
+    assert '<span class="knowledge-item-heading-marker" aria-hidden="true"></span>' in html
+    assert '<span class="knowledge-item-heading-text">知识小题1.定义</span>' in html
+    assert "<p>知识小题1.定义</p>" not in html
+    assert "<p>alpha</p>" in html
+
+
+def test_fill_interaction_html_styles_knowledge_item_headings():
+    blanks = [{"id": "b001", "answer": "alpha", "paragraph_index": 1, "start": 0, "end": 5}]
+    html = fill_interaction_html(
+        ["知识小题1.定义", "alpha"],
+        blanks,
+        [],
+        distractor_groups=[{"paragraph_indexes": [0, 1], "distractors": ["beta"]}],
+    )
+
+    assert '<div class="knowledge-item-heading" role="heading" aria-level="3">' in html
+    assert ".knowledge-item-heading" in html
+    assert "<p>知识小题1.定义</p>" not in html
+    assert 'class="fill-page active"' in html
+
+
 def test_rendering_keeps_paragraph_images():
     html = knowledge_html(
         [""],
@@ -284,6 +309,37 @@ def test_rendering_preserves_latex_delimiters_for_katex():
     assert "renderMathInElement" in html
 
 
+def test_rendering_normalizes_bare_math_tokens_for_katex():
+    html = knowledge_html(["\u53d8\u91cf a satisfies a>=0, x²=9, |a|, π+1, and 0"], [])
+
+    assert "$a$" in html
+    assert r"$a\ge 0$" in html
+    assert "$x^2=9$" in html
+    assert "$|a|$" in html
+    assert r"$\pi+1$" in html
+    assert "$0$" in html
+    assert "and $0$" in html
+
+
+def test_rendering_does_not_double_wrap_existing_latex():
+    html = knowledge_html([r"$\sqrt{a}$ and a"], [])
+
+    assert html.count(r"$\sqrt{a}$") == 1
+    assert "$a$" in html
+    assert "$$a$$" not in html
+
+
+def test_rendering_does_not_normalize_physics_units_or_english_articles():
+    html = knowledge_html(["speed is 10 m/s, distance is 3 m, and not a section"], [])
+
+    assert "10 m/s" in html
+    assert "3 m" in html
+    assert "not a section" in html
+    assert "$m/s$" not in html
+    assert "$m$" not in html
+    assert 'class="inline-formula-frac"' not in html
+
+
 def test_inline_katex_assets_embed_woff2_fonts():
     html = _katex_inline_assets_html()
 
@@ -306,6 +362,24 @@ def test_word_bank_visible_text_preserves_latex():
 
     assert r"$x^2$" in html
     assert 'data-text="$x^2$"' in html
+
+
+def test_word_bank_normalizes_display_without_changing_raw_text():
+    word_bank = [
+        {
+            "number": 1,
+            "option_id": "answer-b001",
+            "text": "a>=0",
+            "is_answer": True,
+            "source_blank_id": "b001",
+        }
+    ]
+
+    html = word_bank_html(word_bank)
+
+    assert 'data-text="a&gt;=0"' in html
+    assert 'data-display-html="' in html
+    assert r"$a\ge 0$" in html
 
 
 def test_word_bank_uses_one_to_one_distractor_ratio():
@@ -391,6 +465,19 @@ def test_fill_interaction_html_contains_drag_click_and_check_controls():
     assert "gap: .82rem" in html
     assert html.index('id="goNextPage"') < html.index('id="resetAnswers"')
     assert html.index('id="enterPractice"') < html.index('id="resetAnswers"')
+
+
+def test_fill_interaction_html_displays_normalized_math_but_checks_raw_text():
+    blanks = [{"id": "b001", "answer": "a>=0", "paragraph_index": 0, "start": 0, "end": 4}]
+    word_bank = build_word_bank(blanks, "math-fill")
+
+    html = fill_interaction_html(["a>=0"], blanks, [], word_bank)
+
+    assert 'data-answer="a&gt;=0"' in html
+    assert 'data-text="a&gt;=0"' in html
+    assert r"$a\ge 0$" in html
+    assert "answer.innerHTML = option.dataset.displayHtml" in html
+    assert "blank.dataset.filledText = rawText" in html
 
 
 def test_fill_interaction_html_paginates_numbered_sections():
@@ -530,6 +617,32 @@ def test_practice_interaction_html_contains_latex_and_submit_payload():
     assert "katex-inline-assets" in html
     assert "practice_submitted" in html
     assert "notifyPracticeSubmitted" in html
+
+
+def test_practice_interaction_html_normalizes_bare_math_tokens():
+    html = practice_interaction_html(
+        [
+            {
+                "display_index": 1,
+                "original_index": 0,
+                "category": "",
+                "stem": "When a>=0, choose x²=9, |a|, and \u03c0+1.",
+                "correct": "a>=0",
+                "wrong": ["a<0", "x=0", "plain words"],
+                "analysis": "Use |a| and \u03c0+1.",
+                "options": ["a>=0", "a<0", "x=0", "plain words"],
+                "images": [],
+            }
+        ]
+    )
+
+    assert r"$a\ge 0$" in html
+    assert "$x^2=9$" in html
+    assert "$a&lt;0$" in html
+    assert "$x=0$" in html
+    assert "$|a|$" in html
+    assert r"$\pi+1$" in html
+    assert "plain words" in html
 
 
 def test_fill_interaction_html_page_word_banks_only_include_page_options():
