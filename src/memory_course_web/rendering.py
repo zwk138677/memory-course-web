@@ -98,7 +98,7 @@ def build_word_bank(
     same answer text, they still produce two independent correct options.
     """
 
-    answer_keys = {_clean_option_text(blank.get("answer", "")).casefold() for blank in blanks}
+    answer_keys = {_clean_option_text(blank.get("answer", "")) for blank in blanks}
     paragraph_set = set(paragraph_indexes or [int(blank.get("paragraph_index", -1)) for blank in blanks])
     options: list[dict[str, Any]] = []
     used_distractor_keys: set[str] = set()
@@ -129,7 +129,7 @@ def build_word_bank(
 
     for option_id, candidate, source_blank_id in distractor_entries:
         cleaned = _clean_option_text(candidate)
-        key = cleaned.casefold()
+        key = cleaned
         if not cleaned or key in answer_keys or key in used_distractor_keys:
             continue
         used_distractor_keys.add(key)

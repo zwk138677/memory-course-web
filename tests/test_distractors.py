@@ -11,7 +11,7 @@ from src.memory_course_web.rendering import (
     practice_interaction_html,
     word_bank_html,
 )
-from src.memory_course_web.validation import validate_distractor_list, validate_finished_course_payload
+from src.memory_course_web.validation import PayloadValidationError, validate_distractor_list, validate_finished_course_payload
 
 
 def sample_payload():
@@ -72,6 +72,51 @@ def test_validate_distractor_list_rejects_answer_duplicate():
         assert "互不相同" in str(exc)
     else:
         raise AssertionError("expected validation error")
+
+
+def test_case_sensitive_validation_rejects_whitespace_duplicate():
+    try:
+        validate_distractor_list("dB", [" dB ", "db", "B"], "test")
+    except PayloadValidationError:
+        pass
+    else:
+        raise AssertionError("expected whitespace-only duplicate to be rejected")
+
+
+def test_case_distinct_units_pass_validation_and_reach_word_bank():
+    payload = {
+        "title": "Sound unit",
+        "knowledge_paragraphs": ["unit", "level dB"],
+        "blanks": [{"id": "b001", "answer": "dB", "paragraph_index": 1, "start": 6, "end": 8}],
+        "distractor_groups": [
+            {
+                "id": "dg001",
+                "title": "unit",
+                "paragraph_indexes": [0, 1],
+                "distractors": ["DB", "db", "B"],
+                "source": "document",
+            }
+        ],
+        "quick_practice": [
+            {
+                "category": "basic",
+                "stem": "Which spelling is correct?",
+                "correct": "dB",
+                "wrong": ["DB", "db", "B"],
+            }
+        ],
+    }
+
+    validated = validate_finished_course_payload(payload)
+    word_bank = build_word_bank(
+        validated["blanks"],
+        "case-sensitive-unit",
+        distractor_groups=validated["distractor_groups"],
+        paragraph_indexes=[0, 1],
+    )
+
+    assert {item["text"] for item in word_bank} == {"dB", "DB", "db", "B"}
+    assert validated["quick_practice"][0]["wrong"] == ["DB", "db", "B"]
 
 
 def test_payload_requires_self_contained_distractor_group_for_blank():

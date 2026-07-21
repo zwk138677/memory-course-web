@@ -72,9 +72,9 @@ def validate_distractor_list(answer: str, distractors: Any, field_name: str) -> 
     if not isinstance(distractors, list) or len(distractors) != 3:
         raise PayloadValidationError(f"{field_name} 必须包含 3 个干扰项。")
     cleaned = [clean_text(item, field_name) for item in distractors]
-    keys = {answer.strip().casefold()}
+    keys = {" ".join(answer.split()).strip()}
     for item in cleaned:
-        key = item.casefold()
+        key = item
         if key in keys:
             raise PayloadValidationError(f"{field_name} 的干扰项必须和答案互不相同。")
         keys.add(key)
@@ -87,9 +87,9 @@ def validate_blank_distractor_list(answer: str, distractors: Any, field_name: st
     if not isinstance(distractors, list) or not distractors:
         raise PayloadValidationError(f"{field_name} 必须至少包含 1 个干扰项。")
     cleaned = [clean_text(item, field_name) for item in distractors]
-    keys = {answer.strip().casefold()}
+    keys = {" ".join(answer.split()).strip()}
     for item in cleaned:
-        key = item.casefold()
+        key = item
         if key in keys:
             raise PayloadValidationError(f"{field_name} 的干扰项必须和答案互不相同。")
         keys.add(key)
@@ -149,12 +149,13 @@ def _validate_blank_group_coverage(blanks: list[dict[str, Any]], groups: list[di
         group = groups_by_paragraph.get(int(blank["paragraph_index"]))
         if group is None:
             raise PayloadValidationError(f"第 {blank['id']} 个填空所在知识小题缺少“干扰项：”。")
-        answers_by_group_id.setdefault(str(group["id"]), set()).add(str(blank["answer"]).strip().casefold())
+        answer_key = " ".join(str(blank["answer"]).split()).strip()
+        answers_by_group_id.setdefault(str(group["id"]), set()).add(answer_key)
 
     for group in groups:
         answer_keys = answers_by_group_id.get(str(group["id"]), set())
         for distractor in group["distractors"]:
-            if distractor.strip().casefold() in answer_keys:
+            if " ".join(distractor.split()).strip() in answer_keys:
                 title = f"“{group['title']}”" if group.get("title") else str(group["id"])
                 raise PayloadValidationError(f"{title} 的干扰项不能和本知识小题填空答案相同。")
 

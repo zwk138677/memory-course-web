@@ -4,7 +4,13 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from src.memory_course_web.finished_course_parser import ParsedParagraph, _paragraph_from_xml, _parse_questions, parse_finished_course
+from src.memory_course_web.finished_course_parser import (
+    ParsedParagraph,
+    _paragraph_from_xml,
+    _parse_questions,
+    _split_distractor_text,
+    parse_finished_course,
+)
 from src.memory_course_web.validation import validate_finished_course_payload
 
 
@@ -21,6 +27,10 @@ def _image_course_samples() -> list[Path]:
         for path in Path(".").glob("**/*.docx")
         if course_marker in path.name and image_marker in path.name and "lo_render_work" not in path.as_posix()
     ]
+
+
+def test_distractor_parser_preserves_case_distinct_units():
+    assert _split_distractor_text(["DB; db; dB"]) == ["DB", "db", "dB"]
 
 
 def test_parse_existing_finished_course_when_available():

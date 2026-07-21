@@ -711,7 +711,7 @@ def _split_distractor_text(texts: list[str]) -> list[str]:
     for text in texts:
         for item in DISTRACTOR_SPLIT_RE.split(text):
             cleaned = " ".join(item.split()).strip()
-            key = cleaned.casefold()
+            key = cleaned
             if cleaned and key not in seen:
                 seen.add(key)
                 items.append(cleaned)
