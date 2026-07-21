@@ -2,6 +2,7 @@ from pathlib import Path
 
 from src.memory_course_web.rendering import (
     _katex_inline_assets_html,
+    _normalize_plain_math_for_latex,
     build_word_bank,
     fill_interaction_html,
     fill_sheet_html,
@@ -319,6 +320,12 @@ def test_rendering_normalizes_bare_math_tokens_for_katex():
     assert r"$\pi+1$" in html
     assert "$0$" in html
     assert "and $0$" in html
+
+
+def test_rendering_keeps_numeric_coefficients_inside_bare_math_expressions():
+    assert _normalize_plain_math_for_latex("u>2f") == "$u>2f$"
+    assert _normalize_plain_math_for_latex("f<u<2f") == "$f<u<2f$"
+    assert _normalize_plain_math_for_latex("u<f") == "$u<f$"
 
 
 def test_rendering_does_not_double_wrap_existing_latex():
