@@ -345,6 +345,13 @@ def test_rendering_does_not_split_complex_literal_fraction_text():
     assert "a/b/c" in html
 
 
+def test_rendering_does_not_partially_wrap_coefficient_fractions():
+    assert _normalize_plain_math_for_latex("2f/3") == "2f/3"
+    assert _normalize_plain_math_for_latex("1/2f") == "1/2f"
+    assert _normalize_plain_math_for_latex("2f / 3") == "2f / 3"
+    assert _normalize_plain_math_for_latex("1 / 2f") == "1 / 2f"
+
+
 def test_rendering_preserves_latex_delimiters_for_katex():
     html = knowledge_html([r"$1/2$ and 1/2 and \(\sqrt{x}\)"], [])
 
@@ -375,6 +382,7 @@ def test_rendering_keeps_numeric_coefficients_inside_bare_math_expressions():
     assert _normalize_plain_math_for_latex("u<f") == "$u<f$"
     assert _normalize_plain_math_for_latex("3 m") == "3 m"
     assert _normalize_plain_math_for_latex("3m") == "3m"
+    assert _normalize_plain_math_for_latex("3t") == "3t"
 
 
 def test_rendering_does_not_double_wrap_existing_latex():

@@ -245,7 +245,7 @@ def _inline_formula_text_html(formula_text: str) -> str:
 
 _SIMPLE_TEXT_FRACTION_RE = re.compile(r"(?<![0-9A-Za-z/])(\d+)\s*/\s*(\d+)(?![0-9A-Za-z/])")
 _LATEX_DELIMITERS = (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$"))
-_PLAIN_ONE_LETTER_UNIT_SUFFIXES = {"g", "h", "l", "m", "s"}
+_PLAIN_ONE_LETTER_UNIT_SUFFIXES = {"g", "h", "l", "m", "s", "t"}
 _PLAIN_MATH_TOKEN_RE = re.compile(
     r"(?<![0-9A-Za-z\\])(?P<abs>\|[A-Za-z]\|)(?![0-9A-Za-z])"
     r"|(?<![0-9A-Za-z\\])(?P<sqrt>√\s*[A-Za-z0-9]+)"
@@ -280,7 +280,7 @@ def _plain_math_replacement(match: re.Match[str]) -> str:
     previous_text = before.rstrip()
     if match.lastgroup == "coef" and token[-1] in _PLAIN_ONE_LETTER_UNIT_SUFFIXES:
         return token
-    if match.lastgroup == "expr" and (next_text.startswith("/") or previous_text.endswith("/")):
+    if match.lastgroup in {"coef", "expr"} and (next_text.startswith("/") or previous_text.endswith("/")):
         return token
     if match.lastgroup == "var":
         if next_text[:1] in {"=", "<", ">", "≤", "≥", "≠"}:
