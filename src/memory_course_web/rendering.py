@@ -245,12 +245,14 @@ def _inline_formula_text_html(formula_text: str) -> str:
 
 _SIMPLE_TEXT_FRACTION_RE = re.compile(r"(?<![0-9A-Za-z/])(\d+)\s*/\s*(\d+)(?![0-9A-Za-z/])")
 _LATEX_DELIMITERS = (("$$", "$$"), (r"\[", r"\]"), (r"\(", r"\)"), ("$", "$"))
+_PLAIN_ONE_LETTER_UNIT_SUFFIXES = {"g", "h", "l", "m", "s"}
 _PLAIN_MATH_TOKEN_RE = re.compile(
     r"(?<![0-9A-Za-z\\])(?P<abs>\|[A-Za-z]\|)(?![0-9A-Za-z])"
     r"|(?<![0-9A-Za-z\\])(?P<sqrt>√\s*[A-Za-z0-9]+)"
     r"|(?<![0-9A-Za-z\\])(?P<signed>[+\-±]\s*[A-Za-z])(?![0-9A-Za-z])"
     r"|(?<![0-9A-Za-z\\])(?P<sup>[A-Za-z]\s*[²³](?:\s*(?:>=|<=|!=|[=<>≤≥≠])\s*-?\s*\d+)?)"
-    r"|(?<![0-9A-Za-z\\])(?P<expr>[A-Za-z]\s*(?:(?:>=|<=|!=|[+\-=<>≤≥≠^])\s*-?\s*(?:\d+(?:\.\d+)?\s*[A-Za-z]?|[A-Za-z]))+)"
+    r"|(?<![0-9A-Za-z\\])(?P<expr>[A-Za-z](?:\s*(?:>=|<=|!=|[+\-=<>≤≥≠^])\s*-?\s*(?:\d+(?:\.\d+)?\s*[A-Za-z]?|[A-Za-z]))+)"
+    r"|(?<![0-9A-Za-z\\.])(?P<coef>\d+(?:\.\d+)?[a-z])(?![0-9A-Za-z\\.])"
     r"|(?<![0-9A-Za-z\\])(?P<pi>π(?:\s*[+\-]\s*(?:\d+|[A-Za-z]))?)"
     r"|(?<![0-9A-Za-z\\.])(?P<zero>0)(?![0-9A-Za-z\\.])"
     r"|(?<![0-9A-Za-z\\])(?P<var>[a-z])(?![0-9A-Za-z])"
@@ -276,6 +278,8 @@ def _plain_math_replacement(match: re.Match[str]) -> str:
     after = match.string[match.end() :]
     next_text = after.lstrip()
     previous_text = before.rstrip()
+    if match.lastgroup == "coef" and token[-1] in _PLAIN_ONE_LETTER_UNIT_SUFFIXES:
+        return token
     if match.lastgroup == "expr" and (next_text.startswith("/") or previous_text.endswith("/")):
         return token
     if match.lastgroup == "var":
