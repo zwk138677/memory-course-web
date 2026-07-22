@@ -368,9 +368,13 @@ def test_rendering_normalizes_bare_math_tokens_for_katex():
 
 
 def test_rendering_keeps_numeric_coefficients_inside_bare_math_expressions():
+    assert _normalize_plain_math_for_latex("2f") == "$2f$"
     assert _normalize_plain_math_for_latex("u>2f") == "$u>2f$"
     assert _normalize_plain_math_for_latex("f<u<2f") == "$f<u<2f$"
+    assert _normalize_plain_math_for_latex("f < v < 2f") == "$f<v<2f$"
     assert _normalize_plain_math_for_latex("u<f") == "$u<f$"
+    assert _normalize_plain_math_for_latex("3 m") == "3 m"
+    assert _normalize_plain_math_for_latex("3m") == "3m"
 
 
 def test_rendering_does_not_double_wrap_existing_latex():
@@ -432,6 +436,24 @@ def test_word_bank_normalizes_display_without_changing_raw_text():
     assert 'data-text="a&gt;=0"' in html
     assert 'data-display-html="' in html
     assert r"$a\ge 0$" in html
+
+
+def test_word_bank_normalizes_standalone_coefficient_without_changing_raw_text():
+    word_bank = [
+        {
+            "number": 5,
+            "option_id": "answer-b005",
+            "text": "2f",
+            "is_answer": True,
+            "source_blank_id": "b005",
+        }
+    ]
+
+    html = word_bank_html(word_bank)
+
+    assert 'data-text="2f"' in html
+    assert 'data-display-html="$2f$"' in html
+    assert '<span class="word-bank-text">$2f$</span>' in html
 
 
 def test_word_bank_uses_one_to_one_distractor_ratio():
@@ -695,6 +717,27 @@ def test_practice_interaction_html_normalizes_bare_math_tokens():
     assert "$|a|$" in html
     assert r"$\pi+1$" in html
     assert "plain words" in html
+
+
+def test_practice_interaction_html_keeps_spaced_chain_in_one_math_node():
+    html = practice_interaction_html(
+        [
+            {
+                "display_index": 2,
+                "original_index": 1,
+                "category": "",
+                "stem": "照相机成像时，像距 v 应满足",
+                "correct": "f < v < 2f",
+                "wrong": ["v > 2f", "v < f", "v = 2f"],
+                "analysis": "",
+                "options": ["v < f", "v = 2f", "v > 2f", "f < v < 2f"],
+                "images": [],
+            }
+        ]
+    )
+
+    assert "$f&lt;v&lt;2f$" in html
+    assert "$f&lt;v$ &lt; 2f" not in html
 
 
 def test_fill_interaction_html_page_word_banks_only_include_page_options():
