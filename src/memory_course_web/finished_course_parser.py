@@ -80,6 +80,7 @@ CHINESE_SECTION_RE = re.compile(r"^[一二三四五六七八九十]+[、.．]\s*
 LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*(?:[、]\s*|[.．](?!\d)\s*)")
 DISTRACTOR_RE = re.compile(r"^\s*干扰项\s*[：:]\s*(.*)$")
 DISTRACTOR_SPLIT_RE = re.compile(r"[；;]")
+COURSE_SEPARATOR = "=" * 40
 
 
 @dataclass(frozen=True)
@@ -759,9 +760,14 @@ def _extract_distractor_groups(knowledge: list[ParsedParagraph]) -> tuple[list[P
             collected = [distractor_text]
             index += 1
             while index < len(knowledge):
-                next_text = knowledge[index].text.strip()
+                next_paragraph = knowledge[index]
+                next_text = next_paragraph.text.strip()
                 if _is_distractor_group_heading(next_text) or _is_practice_boundary(next_text):
                     break
+                if not next_text and next_paragraph.images:
+                    cleaned.append(next_paragraph)
+                    index += 1
+                    continue
                 next_distractor_text = _strip_distractor_marker(next_text)
                 collected.append(next_distractor_text if next_distractor_text is not None else next_text)
                 index += 1
@@ -969,6 +975,28 @@ def _build_blanks(knowledge_paragraphs: list[ParsedParagraph]) -> list[dict[str,
     return blanks
 
 
+def _remove_group_answer_duplicates(
+    blanks: list[dict[str, Any]],
+    distractor_groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized_groups: list[dict[str, Any]] = []
+    for group in distractor_groups:
+        paragraph_indexes = {int(index) for index in group.get("paragraph_indexes", [])}
+        answer_keys = {
+            " ".join(str(blank.get("answer", "")).split()).strip()
+            for blank in blanks
+            if int(blank.get("paragraph_index", -1)) in paragraph_indexes
+        }
+        normalized_group = dict(group)
+        normalized_group["distractors"] = [
+            distractor
+            for distractor in group.get("distractors", [])
+            if " ".join(str(distractor).split()).strip() not in answer_keys
+        ]
+        normalized_groups.append(normalized_group)
+    return normalized_groups
+
+
 def _images_payload(paragraph: ParsedParagraph) -> list[dict[str, Any]]:
     return [image.to_payload() for image in paragraph.images]
 
@@ -983,17 +1011,7 @@ def _build_knowledge_images(knowledge_paragraphs: list[ParsedParagraph]) -> list
     return images
 
 
-def parse_finished_course(docx_path: Path | str) -> FinishedCourse:
-    path = Path(docx_path)
-    if path.suffix.lower() != ".docx":
-        raise ValueError("只支持上传 .docx Word 文件。")
-    if not path.exists():
-        raise FileNotFoundError(path)
-
-    paragraphs = _nonempty_paragraphs(path)
-    if not paragraphs:
-        raise ValueError("没有从 Word 文件中读取到正文。")
-
+def _parse_finished_course_paragraphs(path: Path, paragraphs: list[ParsedParagraph]) -> FinishedCourse:
     first_marker_index = _find_first_index(paragraphs, _is_first_marker)
     second_marker_index = _find_first_index(paragraphs, _is_second_marker)
     first_practice_index = _find_first_index(paragraphs, _is_practice_boundary)
@@ -1049,6 +1067,7 @@ def parse_finished_course(docx_path: Path | str) -> FinishedCourse:
         raise ValueError("知识展示正文为空。")
 
     blanks = _build_blanks(knowledge)
+    distractor_groups = _remove_group_answer_duplicates(blanks, distractor_groups)
     knowledge_images = _build_knowledge_images(knowledge)
     questions = _parse_questions(paragraphs, question_start)
     if not questions:
@@ -1064,3 +1083,50 @@ def parse_finished_course(docx_path: Path | str) -> FinishedCourse:
         source_name=path.name,
         structure=structure,
     )
+
+
+def _is_course_separator(paragraph: ParsedParagraph) -> bool:
+    return paragraph.text.strip() == COURSE_SEPARATOR
+
+
+def _split_course_paragraphs(paragraphs: list[ParsedParagraph]) -> list[list[ParsedParagraph]]:
+    segments: list[list[ParsedParagraph]] = []
+    current: list[ParsedParagraph] = []
+    for paragraph in paragraphs:
+        if _is_course_separator(paragraph):
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(paragraph)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _validated_docx_path(docx_path: Path | str) -> Path:
+    path = Path(docx_path)
+    if path.suffix.lower() != ".docx":
+        raise ValueError("只支持上传 .docx Word 文件。")
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return path
+
+
+def parse_finished_courses(docx_path: Path | str) -> list[FinishedCourse]:
+    path = _validated_docx_path(docx_path)
+    paragraphs = _nonempty_paragraphs(path)
+    if not paragraphs:
+        raise ValueError("没有从 Word 文件中读取到正文。")
+
+    segments = _split_course_paragraphs(paragraphs)
+    if not segments:
+        raise ValueError("没有从 Word 文件中读取到课程内容。")
+    return [_parse_finished_course_paragraphs(path, segment) for segment in segments]
+
+
+def parse_finished_course(docx_path: Path | str) -> FinishedCourse:
+    courses = parse_finished_courses(docx_path)
+    if len(courses) != 1:
+        raise ValueError("检测到多篇课程，请使用合集解析入口。")
+    return courses[0]

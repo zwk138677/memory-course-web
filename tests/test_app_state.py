@@ -100,6 +100,78 @@ def test_activate_course_payload_enters_show_stage(monkeypatch):
     assert fake_state[app._course_stage_key(cid)] == app.COURSE_STAGE_SHOW
 
 
+def test_activate_collection_course_preserves_existing_progress(monkeypatch):
+    payload = {
+        "title": "光的反射",
+        "knowledge_paragraphs": ["知识小题1.反射定律"],
+        "blanks": [],
+        "quick_practice": [],
+    }
+    cid = course_id(payload)
+    result = {"score": 4}
+    fake_state = {
+        app._course_stage_key(cid): app.COURSE_STAGE_PRACTICE,
+        app._practice_result_key(cid): result,
+    }
+    monkeypatch.setattr(app.st, "session_state", fake_state)
+
+    app._activate_course_payload(payload, reset_progress=False)
+
+    assert fake_state["course_payload"] is payload
+    assert fake_state[app._course_stage_key(cid)] == app.COURSE_STAGE_PRACTICE
+    assert fake_state[app._practice_result_key(cid)] is result
+
+
+def test_return_to_course_catalog_keeps_collection_and_course_progress(monkeypatch):
+    payload = {
+        "title": "光的折射",
+        "knowledge_paragraphs": ["知识小题1.折射规律"],
+        "blanks": [],
+        "quick_practice": [],
+    }
+    cid = course_id(payload)
+    collection = {"courses": [payload], "_parser_schema_version": app.PARSER_SCHEMA_VERSION}
+    fake_state = {
+        "course_payload": payload,
+        "parsed_payload": collection,
+        app._course_stage_key(cid): app.COURSE_STAGE_FILL,
+    }
+    monkeypatch.setattr(app.st, "session_state", fake_state)
+
+    app._return_to_course_catalog()
+
+    assert "course_payload" not in fake_state
+    assert fake_state["parsed_payload"] is collection
+    assert fake_state[app._course_stage_key(cid)] == app.COURSE_STAGE_FILL
+
+
+def test_reset_upload_clears_progress_for_every_collection_course(monkeypatch):
+    first = {"title": "光的反射", "knowledge_paragraphs": [], "quick_practice": []}
+    second = {"title": "光的折射", "knowledge_paragraphs": [], "quick_practice": []}
+    first_cid = course_id(first)
+    second_cid = course_id(second)
+    fake_state = {
+        "course_payload": first,
+        "parsed_payload": {
+            "courses": [first, second],
+            "_parser_schema_version": app.PARSER_SCHEMA_VERSION,
+        },
+        app._course_stage_key(first_cid): app.COURSE_STAGE_SHOW,
+        app._course_stage_key(second_cid): app.COURSE_STAGE_PRACTICE,
+        app._practice_result_key(second_cid): {"score": 5},
+        "uploaded_signature": "old",
+    }
+    monkeypatch.setattr(app.st, "session_state", fake_state)
+
+    app._reset_course_state(clear_upload_signature=True)
+
+    assert "parsed_payload" not in fake_state
+    assert "uploaded_signature" not in fake_state
+    assert app._course_stage_key(first_cid) not in fake_state
+    assert app._course_stage_key(second_cid) not in fake_state
+    assert app._practice_result_key(second_cid) not in fake_state
+
+
 def test_practice_sample_is_stable_until_reset(monkeypatch):
     fake_state = {}
     calls = []

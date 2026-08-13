@@ -4,8 +4,11 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from src.memory_course_web import finished_course_parser
 from src.memory_course_web.finished_course_parser import (
+    ParagraphImage,
     ParsedParagraph,
+    _extract_distractor_groups,
     _paragraph_from_xml,
     _parse_questions,
     _split_distractor_text,
@@ -31,6 +34,28 @@ def _image_course_samples() -> list[Path]:
 
 def test_distractor_parser_preserves_case_distinct_units():
     assert _split_distractor_text(["DB; db; dB"]) == ["DB", "db", "dB"]
+
+
+def test_distractor_parser_keeps_image_only_paragraph_after_distractors():
+    image = ParagraphImage(
+        id="rId1",
+        filename="reflection.png",
+        mime_type="image/png",
+        data_uri="data:image/png;base64,AA==",
+        renderable=True,
+    )
+    knowledge = [
+        ParsedParagraph("知识小题1.反射类型"),
+        ParsedParagraph("镜面反射和漫反射都满足反射定律。"),
+        ParsedParagraph("干扰项：不满足；不一定满足"),
+        ParsedParagraph("", images=[image]),
+    ]
+
+    cleaned, groups = _extract_distractor_groups(knowledge)
+
+    assert [paragraph.text for paragraph in cleaned] == ["知识小题1.反射类型", "镜面反射和漫反射都满足反射定律。", ""]
+    assert cleaned[-1].images == [image]
+    assert groups[0]["distractors"] == ["不满足", "不一定满足"]
 
 
 def test_parse_existing_finished_course_when_available():
@@ -168,6 +193,76 @@ def _write_minimal_docx(path: Path, texts: list[str]) -> None:
         package.writestr("_rels/.rels", root_rels)
         package.writestr("word/document.xml", document)
         package.writestr("word/_rels/document.xml.rels", doc_rels)
+
+
+def _complete_reference_course(title: str, answer: str, correct: str) -> list[str]:
+    return [
+        title,
+        "知识小题1.核心概念",
+        (
+            "<w:p>"
+            "<w:r><w:t>需要记住：</w:t></w:r>"
+            f'<w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>{answer}</w:t></w:r>'
+            "</w:p>"
+        ),
+        "干扰项：干扰甲；干扰乙；干扰丙",
+        "— 配套练习题 —",
+        "【第一题】：",
+        "【来源：知识小题1】",
+        f"【题目内容】：{title}的正确表述是哪一项？",
+        f"【正确选项】：{correct}",
+        "【错误选项1】：错误甲",
+        "【错误选项2】：错误乙",
+        "【错误选项3】：错误丙",
+        f"【解析】：应选择{correct}。",
+    ]
+
+
+def test_parse_finished_courses_splits_on_equals_separator_and_ignores_empty_tail(tmp_path: Path):
+    docx = tmp_path / "physics_collection.docx"
+    first = _complete_reference_course("一、第一课", "答案一", "正确一")
+    second = _complete_reference_course("二、第二课", "答案二", "正确二")
+    _write_minimal_docx(docx, first + ["========================================"] + second + ["========================================"])
+
+    courses = finished_course_parser.parse_finished_courses(docx)
+
+    assert [course.title for course in courses] == ["一、第一课", "二、第二课"]
+    assert [[question["correct"] for question in course.quick_practice] for course in courses] == [["正确一"], ["正确二"]]
+    assert [[blank["answer"] for blank in course.blanks] for course in courses] == [["答案一"], ["答案二"]]
+
+
+def test_parse_finished_courses_does_not_guess_a_boundary_without_separator(tmp_path: Path):
+    docx = tmp_path / "missing_separator.docx"
+    first = _complete_reference_course("一、第一课", "答案一", "正确一")
+    second = _complete_reference_course("二、第二课", "答案二", "正确二")
+    _write_minimal_docx(docx, first + second)
+
+    courses = finished_course_parser.parse_finished_courses(docx)
+
+    assert len(courses) == 1
+    assert courses[0].title == "一、第一课"
+
+
+def test_parse_finished_courses_requires_the_full_forty_equals_separator(tmp_path: Path):
+    docx = tmp_path / "short_separator.docx"
+    first = _complete_reference_course("一、第一课", "答案一", "正确一")
+    second = _complete_reference_course("二、第二课", "答案二", "正确二")
+    _write_minimal_docx(docx, first + ["=" * 39] + second)
+
+    courses = finished_course_parser.parse_finished_courses(docx)
+
+    assert len(courses) == 1
+
+
+def test_parser_removes_shared_distractor_that_duplicates_an_item_answer(tmp_path: Path):
+    docx = tmp_path / "shared_answer_in_distractors.docx"
+    course = _complete_reference_course("颜色", "反射", "正确项")
+    course[3] = "干扰项：反射；透过；白色"
+    _write_minimal_docx(docx, course)
+
+    payload = validate_finished_course_payload(parse_finished_course(docx).to_payload())
+
+    assert payload["distractor_groups"][0]["distractors"] == ["透过", "白色"]
 
 
 def test_parse_physics_course_title_and_hides_title_paragraphs(tmp_path: Path):

@@ -10,14 +10,14 @@ from typing import Any
 import streamlit as st
 import streamlit.components.v1 as components
 
-from src.memory_course_web.finished_course_parser import parse_finished_course
+from src.memory_course_web.finished_course_parser import parse_finished_courses
 from src.memory_course_web.rendering import course_id, fill_interaction_html, knowledge_html, practice_interaction_html, stable_options
 from src.memory_course_web.validation import validate_finished_course_payload
 
 
 st.set_page_config(page_title="成品背记资料学习页", layout="wide")
 
-PARSER_SCHEMA_VERSION = "2026-06-08-self-distractors-v1"
+PARSER_SCHEMA_VERSION = "2026-08-13-multi-course-v1"
 UPLOAD_NONCE_KEY = "course_upload_nonce"
 MATH_CATEGORY_LABELS = {"基础辨析", "易错辨析", "简单应用"}
 PRACTICE_SAMPLE_SIZE = 5
@@ -66,6 +66,16 @@ h1, h2, h3 {
   color: #806a49;
   font-size: .96rem;
   margin-bottom: 1.15rem;
+}
+.catalog-summary {
+  margin: .25rem 0 1rem;
+  color: #735f43;
+  font-size: .94rem;
+}
+.catalog-course-meta {
+  margin-top: .24rem;
+  color: #806a49;
+  font-size: .88rem;
 }
 .learning-card {
   border: 1px solid #ead7ad;
@@ -130,13 +140,72 @@ button[kind="primary"] {
   font-weight: 700;
   border-color: #dfc286;
 }
+.stButton > button:not([kind="primary"]),
+.stDownloadButton > button {
+  background: #fffaf0;
+  color: #5d451f;
+}
+.stButton > button:not([kind="primary"]):hover,
+.stDownloadButton > button:hover {
+  background: #fff4d8;
+  color: #4b330f;
+  border-color: #d49a2a;
+}
 .stButton > button[kind="primary"] {
   background: #b86f00;
   border-color: #b86f00;
+  color: #fffdf8;
 }
 .stButton > button[kind="primary"]:hover {
   background: #965900;
   border-color: #965900;
+  color: #fffdf8;
+}
+div[class*="st-key-catalog_course_link_"] {
+  margin-bottom: -.28rem;
+}
+div[class*="st-key-catalog_course_link_"] .stButton > button,
+div[class*="st-key-catalog_course_link_"] button {
+  width: auto;
+  min-height: 0;
+  height: auto;
+  justify-content: flex-start;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #7a4800;
+  font-size: 1.08rem;
+  font-weight: 800;
+  line-height: 1.5;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: rgba(122, 72, 0, .42);
+  text-decoration-thickness: 1px;
+  text-underline-offset: .18em;
+}
+div[class*="st-key-catalog_course_link_"] .stButton > button:hover,
+div[class*="st-key-catalog_course_link_"] button:hover {
+  border: 0;
+  background: transparent;
+  color: #9a5d06;
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  text-underline-offset: .18em;
+}
+div[class*="st-key-catalog_course_link_"] .stButton > button:focus-visible,
+div[class*="st-key-catalog_course_link_"] button:focus-visible {
+  outline: 2px solid #d5961e;
+  outline-offset: 3px;
+}
+div[class*="st-key-catalog_course_link_"] .stButton > button p,
+div[class*="st-key-catalog_course_link_"] button p {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  white-space: normal;
 }
 .stFileUploader section {
   border-radius: 8px;
@@ -457,6 +526,13 @@ def _payload_needs_reparse(payload: Any) -> bool:
     return bool(questions) and any(not str(question.get("analysis", "")).strip() for question in questions)
 
 
+def _collection_needs_reparse(payload: Any) -> bool:
+    if not _has_current_parser_schema(payload):
+        return True
+    courses = _collection_courses(payload)
+    return not courses or any(_payload_needs_reparse(course) for course in courses)
+
+
 def _upload_widget_key() -> str:
     return f"course_upload_{int(st.session_state.get(UPLOAD_NONCE_KEY, 0))}"
 
@@ -583,18 +659,43 @@ def _parse_from_upload(file_name: str, file_bytes: bytes, parser_schema_version:
         safe_name = Path(file_name).name or "course.docx"
         docx_path = Path(temp_dir) / safe_name
         docx_path.write_bytes(file_bytes)
-        course = parse_finished_course(docx_path)
-    payload = validate_finished_course_payload(course.to_payload())
-    return {**payload, "_parser_schema_version": parser_schema_version}
+        courses = parse_finished_courses(docx_path)
+    payloads = [_tag_parser_schema(validate_finished_course_payload(course.to_payload())) for course in courses]
+    return {
+        "source_name": safe_name,
+        "courses": payloads,
+        "_parser_schema_version": parser_schema_version,
+    }
+
+
+def _collection_courses(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    courses = payload.get("courses")
+    if isinstance(courses, list):
+        return [course for course in courses if isinstance(course, dict)]
+    if "title" in payload:
+        return [payload]
+    return []
+
+
+def _clear_course_progress(payload: dict[str, Any]) -> None:
+    cid = course_id(payload)
+    _clear_practice_state(cid)
+    _clear_fill_progress(cid)
+    st.session_state.pop(_course_stage_key(cid), None)
 
 
 def _reset_course_state(*, clear_upload_signature: bool = False, reset_uploader: bool = False) -> None:
-    payload = st.session_state.get("course_payload")
-    if payload:
+    payloads = _collection_courses(st.session_state.get("course_payload"))
+    if clear_upload_signature:
+        payloads.extend(_collection_courses(st.session_state.get("parsed_payload")))
+    cleared: set[str] = set()
+    for payload in payloads:
         cid = course_id(payload)
-        _clear_practice_state(cid)
-        _clear_fill_progress(cid)
-        st.session_state.pop(_course_stage_key(cid), None)
+        if cid not in cleared:
+            _clear_course_progress(payload)
+            cleared.add(cid)
     st.session_state.pop("course_payload", None)
     if clear_upload_signature:
         st.session_state.pop("uploaded_signature", None)
@@ -604,13 +705,30 @@ def _reset_course_state(*, clear_upload_signature: bool = False, reset_uploader:
         st.session_state[UPLOAD_NONCE_KEY] = int(st.session_state.get(UPLOAD_NONCE_KEY, 0)) + 1
 
 
-def _activate_course_payload(payload: dict[str, Any]) -> str:
+def _activate_course_payload(payload: dict[str, Any], *, reset_progress: bool = True) -> str:
     st.session_state["course_payload"] = payload
     cid = course_id(payload)
-    _clear_practice_state(cid)
-    _clear_fill_progress(cid)
-    _set_course_stage(cid, COURSE_STAGE_SHOW)
+    if reset_progress:
+        _clear_course_progress(payload)
+    if _course_stage_key(cid) not in st.session_state:
+        _set_course_stage(cid, COURSE_STAGE_SHOW)
     return cid
+
+
+def _return_to_course_catalog() -> None:
+    st.session_state.pop("course_payload", None)
+
+
+def _has_course_progress(cid: str) -> bool:
+    return any(
+        key in st.session_state
+        for key in (
+            _course_stage_key(cid),
+            _fill_progress_key(cid),
+            _practice_result_key(cid),
+            _practice_sample_key(cid),
+        )
+    )
 
 
 def _consume_flow_action(cid: str) -> None:
@@ -721,6 +839,36 @@ def _render_practice_tab(payload: dict[str, Any]) -> None:
         st.rerun()
 
 
+def _render_course_catalog(collection: dict[str, Any]) -> None:
+    courses = _collection_courses(collection)
+    source_name = html.escape(str(collection.get("source_name", "合集 Word")))
+    st.markdown('<div class="app-shell-title">课程目录</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="catalog-summary">{source_name} · 已识别 {len(courses)} 篇课程</div>',
+        unsafe_allow_html=True,
+    )
+
+    for index, payload in enumerate(courses, start=1):
+        cid = course_id(payload)
+        with st.container(border=True):
+            title = str(payload.get("title", f"课程 {index}"))
+            if st.button(title, key=f"catalog_course_link_{index}_{cid}", type="tertiary"):
+                _activate_course_payload(payload, reset_progress=False)
+                st.rerun()
+            knowledge_count = len(payload.get("knowledge_paragraphs", []))
+            blank_count = len(payload.get("blanks", []))
+            practice_count = len(payload.get("quick_practice", []))
+            progress_text = " · 学习进度已保留" if _has_course_progress(cid) else ""
+            st.markdown(
+                f'<div class="catalog-course-meta">知识段落 {knowledge_count} · 填空 {blank_count} · 练习 {practice_count}{progress_text}</div>',
+                unsafe_allow_html=True,
+            )
+
+    if st.button("重新上传资料", key="reset_collection_upload"):
+        _reset_course_state(clear_upload_signature=True, reset_uploader=True)
+        st.rerun()
+
+
 def _render_course(payload: dict[str, Any]) -> None:
     cid = course_id(payload)
     _consume_flow_action(cid)
@@ -729,7 +877,18 @@ def _render_course(payload: dict[str, Any]) -> None:
         f'<section class="course-title-card"><h1>{html.escape(str(payload["title"]))}</h1></section>',
         unsafe_allow_html=True,
     )
-    if st.button("重新上传资料", key=f"reset_upload_{cid}"):
+    collection_courses = _collection_courses(st.session_state.get("parsed_payload"))
+    if len(collection_courses) > 1:
+        catalog_column, upload_column = st.columns(2)
+        with catalog_column:
+            if st.button("返回课程目录", key=f"return_catalog_{cid}", use_container_width=True):
+                _return_to_course_catalog()
+                st.rerun()
+        with upload_column:
+            if st.button("重新上传资料", key=f"reset_upload_{cid}", use_container_width=True):
+                _reset_course_state(clear_upload_signature=True, reset_uploader=True)
+                st.rerun()
+    elif st.button("重新上传资料", key=f"reset_upload_{cid}"):
         _reset_course_state(clear_upload_signature=True, reset_uploader=True)
         st.rerun()
     st.markdown(_step_indicator_html(active_stage), unsafe_allow_html=True)
@@ -774,42 +933,43 @@ def main() -> None:
         _render_course(active_payload)
         return
 
+    parsed_payload = st.session_state.get("parsed_payload")
+    if parsed_payload is not None and _collection_needs_reparse(parsed_payload):
+        _reset_course_state(clear_upload_signature=True, reset_uploader=True)
+        st.rerun()
+
     st.markdown('<div class="app-shell-title">成品背记资料学习页</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="app-shell-caption">上传已经生成好的背记课 Word，进入知识展示、选词填空和快速练习。</div>',
+        '<div class="app-shell-caption">上传单篇或合集背记课 Word，进入知识展示、选词填空和快速练习。</div>',
         unsafe_allow_html=True,
     )
 
+    if parsed_payload is not None:
+        _render_course_catalog(parsed_payload)
+        return
+
     with st.container(border=True):
         uploaded = st.file_uploader("上传成品背记资料 Word", type=["docx"], accept_multiple_files=False, key=_upload_widget_key())
-    parsed_payload = st.session_state.get("parsed_payload")
-    if parsed_payload is not None and _payload_needs_reparse(parsed_payload):
-        st.session_state.pop("parsed_payload", None)
-        parsed_payload = None
-        st.session_state.pop("uploaded_signature", None)
 
-    if uploaded is None and parsed_payload is None:
+    if uploaded is None:
         st.info("请先上传 `.docx` 成品背记资料。")
         return
 
-    if uploaded is not None:
-        file_bytes = uploaded.getvalue()
-        upload_signature = hashlib.sha256(uploaded.name.encode("utf-8") + file_bytes).hexdigest()
-        if st.session_state.get("uploaded_signature") != upload_signature or parsed_payload is None:
-            _reset_course_state()
-            try:
-                with st.spinner("正在识别成品背记资料结构..."):
-                    parsed_payload = _parse_from_upload(uploaded.name, file_bytes, PARSER_SCHEMA_VERSION)
-            except Exception as exc:
-                st.error(f"无法识别这个 Word 文件：{exc}")
-                return
-            st.session_state["uploaded_signature"] = upload_signature
-            st.session_state["parsed_payload"] = parsed_payload
-            _activate_course_payload(parsed_payload)
-            st.rerun()
-
-    if parsed_payload is not None:
-        _activate_course_payload(parsed_payload)
+    file_bytes = uploaded.getvalue()
+    upload_signature = hashlib.sha256(uploaded.name.encode("utf-8") + file_bytes).hexdigest()
+    if st.session_state.get("uploaded_signature") != upload_signature:
+        _reset_course_state(clear_upload_signature=True)
+        try:
+            with st.spinner("正在识别成品背记资料结构..."):
+                parsed_payload = _parse_from_upload(uploaded.name, file_bytes, PARSER_SCHEMA_VERSION)
+        except Exception as exc:
+            st.error(f"无法识别这个 Word 文件：{exc}")
+            return
+        st.session_state["uploaded_signature"] = upload_signature
+        st.session_state["parsed_payload"] = parsed_payload
+        courses = _collection_courses(parsed_payload)
+        if len(courses) == 1:
+            _activate_course_payload(courses[0])
         st.rerun()
 
 
