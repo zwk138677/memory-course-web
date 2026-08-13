@@ -701,6 +701,45 @@ def test_practice_interaction_html_contains_latex_and_submit_payload():
     assert "notifyPracticeSubmitted" in html
 
 
+def test_practice_review_html_shows_completed_options_images_and_answers():
+    html = practice_interaction_html(
+        [],
+        result_items=[
+            {
+                "display_index": 1,
+                "stem": "照相机的像距满足",
+                "selected": "v > 2f",
+                "correct": "f < v < 2f",
+                "analysis": "像距位于一倍焦距与二倍焦距之间。",
+                "is_correct": False,
+                "options": ["v < f", "v = 2f", "v > 2f", "f < v < 2f"],
+                "images": [
+                    {
+                        "id": "question-image",
+                        "filename": "lens.png",
+                        "mime_type": "image/png",
+                        "data_uri": "data:image/png;base64,AAAA",
+                        "renderable": True,
+                        "alt_text": "透镜成像图",
+                    }
+                ],
+            }
+        ],
+        score=0,
+        show_all_options=True,
+    )
+
+    assert "照相机的像距满足" in html
+    assert "$v&gt;2f$" in html
+    assert "$f&lt;v&lt;2f$" in html
+    assert "你的选择" in html
+    assert "正确答案" in html
+    assert "像距位于一倍焦距与二倍焦距之间。" in html
+    assert "透镜成像图" in html
+    assert "practice-review-option" in html
+    assert "data:image/png;base64,AAAA" in html
+
+
 def test_practice_interaction_html_normalizes_bare_math_tokens():
     html = practice_interaction_html(
         [

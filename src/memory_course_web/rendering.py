@@ -680,6 +680,7 @@ def practice_interaction_html(
     *,
     result_items: list[dict[str, Any]] | None = None,
     score: int = 0,
+    show_all_options: bool = False,
 ) -> str:
     katex_assets = _katex_inline_assets_html()
     if result_items is not None:
@@ -691,20 +692,47 @@ def practice_interaction_html(
             is_correct = bool(item.get("is_correct"))
             state_class = "is-correct" if is_correct else "is-wrong"
             status = "正确" if is_correct else "错误"
-            selected = str(item.get("selected") or "未作答")
+            selected_value = str(item.get("selected") or "")
+            selected = selected_value or "未作答"
+            correct = str(item.get("correct") or "")
             analysis = str(item.get("analysis") or "").strip()
             analysis_html = (
                 f'<div class="practice-review-analysis"><strong>解析：</strong>{_practice_value_html(analysis)}</div>'
                 if analysis
                 else ""
             )
+            options_html = ""
+            images_html = ""
+            if show_all_options:
+                images_html = image_group_html(item.get("images", []))
+                rendered_options: list[str] = []
+                for option_index, option in enumerate(item.get("options", [])):
+                    option_text = str(option)
+                    option_classes = ["practice-review-option"]
+                    option_status = ""
+                    if option_text == correct:
+                        option_classes.append("is-answer")
+                        option_status = "正确答案"
+                    if option_text == selected_value:
+                        option_classes.append("is-selected")
+                        option_status = "你的选择 · 正确答案" if option_text == correct else "你的选择"
+                    status_html = f'<span class="practice-review-option-status">{option_status}</span>' if option_status else ""
+                    rendered_options.append(
+                        f'<div class="{" ".join(option_classes)}">'
+                        f'<span class="practice-review-option-label">{chr(65 + option_index)}</span>'
+                        f'<span class="practice-review-option-text">{_practice_value_html(option_text)}</span>'
+                        f"{status_html}</div>"
+                    )
+                if rendered_options:
+                    options_html = '<div class="practice-review-options">' + "".join(rendered_options) + "</div>"
             cards.append(
                 f'<article class="practice-review-item {state_class}">'
                 f'<span class="practice-review-status">{status}</span>'
                 f'<div class="question-stem"><span class="question-number">{display_index}</span>'
                 f'<span>{_practice_value_html(item.get("stem", ""))}</span></div>'
+                f"{images_html}{options_html}"
                 f'<div class="practice-review-line"><strong>你的选择：</strong>{_practice_value_html(selected)}</div>'
-                f'<div class="practice-review-line"><strong>正确答案：</strong>{_practice_value_html(item.get("correct", ""))}</div>'
+                f'<div class="practice-review-line"><strong>正确答案：</strong>{_practice_value_html(correct)}</div>'
                 f"{analysis_html}"
                 "</article>"
             )
@@ -780,6 +808,37 @@ def practice_interaction_html(
   }}
   .practice-review-line,
   .practice-review-analysis {{ margin-top: .28rem; color: #5e4c31; }}
+  .practice-review-options {{ display: grid; gap: .45rem; margin: .65rem 0; }}
+  .practice-review-option {{
+    display: grid;
+    grid-template-columns: 1.75rem minmax(0, 1fr) auto;
+    gap: .55rem;
+    align-items: center;
+    min-height: 2.65rem;
+    padding: .45rem .65rem;
+    border: 1px solid #ead7ad;
+    border-radius: 8px;
+    background: #fffdf8;
+  }}
+  .practice-review-option.is-answer {{ border-color: #78a77d; background: #f1fbf0; }}
+  .practice-review-option.is-selected:not(.is-answer) {{ border-color: #d68a82; background: #fff5f3; }}
+  .practice-review-option-label {{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.65rem;
+    height: 1.65rem;
+    border-radius: 999px;
+    background: #fff0bf;
+    color: #835108;
+    font-weight: 800;
+  }}
+  .practice-review-option-text {{ min-width: 0; line-height: 1.55; }}
+  .practice-review-option-status {{ color: #5e4c31; font-size: .82rem; font-weight: 800; }}
+  @media (max-width: 640px) {{
+    .practice-review-option {{ grid-template-columns: 1.75rem minmax(0, 1fr); }}
+    .practice-review-option-status {{ grid-column: 2; }}
+  }}
 </style>
 <div class="practice-widget">
   <div class="practice-result-card"><strong>快速练习得分：</strong>{score} / {total}<span class="practice-result-rate">正确率：{accuracy}%</span></div>
@@ -1027,6 +1086,7 @@ def practice_interaction_html(
         selected: selected || null,
         correct: question.correct,
         analysis: question.analysis,
+        options: question.options,
         is_correct: isCorrect,
       }};
     }});

@@ -24,6 +24,7 @@ PRACTICE_SAMPLE_SIZE = 5
 COURSE_STAGE_SHOW = "show"
 COURSE_STAGE_FILL = "fill"
 COURSE_STAGE_PRACTICE = "practice"
+COURSE_STAGE_OVERVIEW = "overview"
 
 FILL_INTERACTION_COMPONENT = components.declare_component(
     "fill_interaction_component",
@@ -329,9 +330,10 @@ div[class*="st-key-catalog_course_link_"] button p {
 }
 .flow-step {
   display: inline-flex;
+  flex: 1 1 0;
   align-items: center;
   justify-content: center;
-  min-width: 6.2rem;
+  min-width: 0;
   padding: .62rem .85rem .58rem;
   border: 1px solid #ead7ad;
   border-bottom: 0;
@@ -476,6 +478,15 @@ div[role="radiogroup"] label:hover {
   margin-top: .28rem;
   color: #5e4c31;
 }
+[data-testid="stHorizontalBlock"]:has([class*="st-key-practice_restart_"]) {
+  flex-direction: row !important;
+  gap: .75rem;
+}
+[data-testid="stHorizontalBlock"]:has([class*="st-key-practice_restart_"]) > [data-testid="stColumn"] {
+  flex: 1 1 0 !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
 @media (max-width: 720px) {
   .main .block-container {
     padding-left: .9rem;
@@ -483,6 +494,11 @@ div[role="radiogroup"] label:hover {
   }
   .course-title-card h1 {
     font-size: 1.28rem;
+  }
+  .flow-step {
+    padding-left: .35rem;
+    padding-right: .35rem;
+    font-size: .88rem;
   }
   .learning-card {
     padding: .85rem;
@@ -571,7 +587,7 @@ def _set_course_stage(cid: str, stage: str) -> None:
 
 def _current_course_stage(cid: str) -> str:
     stage = str(st.session_state.get(_course_stage_key(cid), COURSE_STAGE_SHOW))
-    if stage not in {COURSE_STAGE_SHOW, COURSE_STAGE_FILL, COURSE_STAGE_PRACTICE}:
+    if stage not in {COURSE_STAGE_SHOW, COURSE_STAGE_FILL, COURSE_STAGE_PRACTICE, COURSE_STAGE_OVERVIEW}:
         return COURSE_STAGE_SHOW
     return stage
 
@@ -651,6 +667,39 @@ def _reset_practice_sample(cid: str) -> None:
 
 def _practice_accuracy_percent(score: int, total: int) -> int:
     return round(score / total * 100) if total else 0
+
+
+def _practice_review_items(payload: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
+    questions = [question for question in payload.get("quick_practice", []) if isinstance(question, dict)]
+    source_indexes = result.get("source_indexes", [])
+    if not isinstance(source_indexes, list):
+        source_indexes = []
+
+    review_items: list[dict[str, Any]] = []
+    for position, item in enumerate(result.get("items", result.get("wrong_items", []))):
+        if not isinstance(item, dict):
+            continue
+        display_index = int(item.get("display_index", item.get("index", position + 1)) or position + 1)
+        fallback_index = source_indexes[position] if position < len(source_indexes) else display_index - 1
+        original_index = int(item.get("original_index", fallback_index) or 0)
+        source_question = questions[original_index] if 0 <= original_index < len(questions) else {}
+        enriched_item = dict(item)
+        enriched_item["display_index"] = display_index
+        enriched_item["original_index"] = original_index
+
+        for field in ("stem", "correct", "analysis", "category"):
+            if not str(enriched_item.get(field, "")).strip():
+                enriched_item[field] = source_question.get(field, "")
+        if not isinstance(enriched_item.get("images"), list):
+            enriched_item["images"] = source_question.get("images", [])
+        if not isinstance(enriched_item.get("options"), list) or not enriched_item["options"]:
+            enriched_item["options"] = [
+                source_question.get("correct", enriched_item.get("correct", "")),
+                *list(source_question.get("wrong", [])),
+            ]
+            enriched_item["options"] = [option for option in enriched_item["options"] if str(option).strip()]
+        review_items.append(enriched_item)
+    return review_items
 
 
 @st.cache_data(show_spinner=False)
@@ -746,6 +795,7 @@ def _step_indicator_html(active_stage: str) -> str:
         (COURSE_STAGE_SHOW, "知识展示"),
         (COURSE_STAGE_FILL, "知识填空"),
         (COURSE_STAGE_PRACTICE, "快速练习"),
+        (COURSE_STAGE_OVERVIEW, "总览"),
     ]
     items = []
     for stage, label in steps:
@@ -784,27 +834,23 @@ def _render_practice_tab(payload: dict[str, Any]) -> None:
 
     if result_key in st.session_state:
         result = st.session_state[result_key]
-        result_items = []
-        for item in result.get("items", result.get("wrong_items", [])):
-            if not isinstance(item, dict):
-                continue
-            display_index = int(item.get("display_index", item.get("index", 0)) or 0)
-            original_index = int(item.get("original_index", display_index - 1) or 0)
-            source_question = questions[original_index] if 0 <= original_index < len(questions) else {}
-            enriched_item = dict(item)
-            if not str(enriched_item.get("analysis", "")).strip():
-                enriched_item["analysis"] = source_question.get("analysis", "")
-            result_items.append(enriched_item)
+        result_items = _practice_review_items(payload, result)
         result_score = int(result.get("score", 0))
         PRACTICE_INTERACTION_COMPONENT(
             html=practice_interaction_html([], result_items=result_items, score=result_score),
             default={},
             key=f"practice_result_component_{cid}",
         )
-        if st.button("重新练习", key=f"practice_restart_{cid}"):
-            st.session_state.pop(result_key, None)
-            _reset_practice_sample(cid)
-            st.rerun()
+        restart_column, overview_column = st.columns(2)
+        with restart_column:
+            if st.button("重新练习", key=f"practice_restart_{cid}", use_container_width=True):
+                st.session_state.pop(result_key, None)
+                _reset_practice_sample(cid)
+                st.rerun()
+        with overview_column:
+            if st.button("进入总览", type="primary", key=f"enter_overview_{cid}", use_container_width=True):
+                _set_course_stage(cid, COURSE_STAGE_OVERVIEW)
+                st.rerun()
         return
 
     sample = _current_practice_sample(cid, len(questions))
@@ -855,12 +901,11 @@ def _render_course_catalog(collection: dict[str, Any]) -> None:
             if st.button(title, key=f"catalog_course_link_{index}_{cid}", type="tertiary"):
                 _activate_course_payload(payload, reset_progress=False)
                 st.rerun()
-            knowledge_count = len(payload.get("knowledge_paragraphs", []))
             blank_count = len(payload.get("blanks", []))
             practice_count = len(payload.get("quick_practice", []))
             progress_text = " · 学习进度已保留" if _has_course_progress(cid) else ""
             st.markdown(
-                f'<div class="catalog-course-meta">知识段落 {knowledge_count} · 填空 {blank_count} · 练习 {practice_count}{progress_text}</div>',
+                f'<div class="catalog-course-meta">填空 {blank_count} · 练习 {practice_count}{progress_text}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -920,6 +965,37 @@ def _render_course(payload: dict[str, Any]) -> None:
         with st.container(border=True):
             st.markdown('<div class="section-kicker">快速练习</div>', unsafe_allow_html=True)
             _render_practice_tab(payload)
+        return
+
+    if active_stage == COURSE_STAGE_OVERVIEW:
+        result = st.session_state.get(_practice_result_key(cid))
+        if not isinstance(result, dict):
+            _set_course_stage(cid, COURSE_STAGE_PRACTICE)
+            st.rerun()
+            return
+
+        with st.container(border=True):
+            st.markdown('<div class="section-kicker">知识展示</div>', unsafe_allow_html=True)
+            HTML_CONTENT_COMPONENT(
+                html=knowledge_html(payload["knowledge_paragraphs"], payload["blanks"], payload.get("knowledge_images", [])),
+                default={},
+                key=f"knowledge_overview_{cid}",
+            )
+        with st.container(border=True):
+            st.markdown('<div class="section-kicker">快速练习回顾</div>', unsafe_allow_html=True)
+            PRACTICE_INTERACTION_COMPONENT(
+                html=practice_interaction_html(
+                    [],
+                    result_items=_practice_review_items(payload, result),
+                    score=int(result.get("score", 0)),
+                    show_all_options=True,
+                ),
+                default={},
+                key=f"practice_overview_{cid}",
+            )
+        if st.button("返回练习结果", key=f"return_practice_result_{cid}"):
+            _set_course_stage(cid, COURSE_STAGE_PRACTICE)
+            st.rerun()
 
 
 def main() -> None:

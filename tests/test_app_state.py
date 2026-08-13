@@ -240,8 +240,51 @@ def test_course_stage_defaults_and_validates(monkeypatch):
     app._set_course_stage("course", app.COURSE_STAGE_FILL)
     assert app._current_course_stage("course") == app.COURSE_STAGE_FILL
 
+    app._set_course_stage("course", app.COURSE_STAGE_OVERVIEW)
+    assert app._current_course_stage("course") == app.COURSE_STAGE_OVERVIEW
+
     fake_state[app._course_stage_key("course")] = "unknown"
     assert app._current_course_stage("course") == app.COURSE_STAGE_SHOW
+
+
+def test_practice_review_items_only_use_just_completed_questions():
+    payload = {
+        "quick_practice": [
+            {
+                "stem": f"题目{index}",
+                "correct": f"正确{index}",
+                "wrong": [f"错误{index}-1", f"错误{index}-2", f"错误{index}-3"],
+                "analysis": f"解析{index}",
+                "images": [{"id": f"image-{index}"}],
+            }
+            for index in range(1, 7)
+        ]
+    }
+    result = {
+        "score": 4,
+        "items": [
+            {
+                "display_index": display_index,
+                "original_index": original_index,
+                "stem": f"题目{original_index + 1}",
+                "selected": f"正确{original_index + 1}",
+                "correct": f"正确{original_index + 1}",
+                "is_correct": True,
+                "options": [f"错误{original_index + 1}-1", f"正确{original_index + 1}"],
+            }
+            for display_index, original_index in enumerate([5, 0, 3, 1, 4], start=1)
+        ],
+        "source_indexes": [5, 0, 3, 1, 4],
+    }
+
+    items = app._practice_review_items(payload, result)
+
+    assert len(items) == 5
+    assert [item["original_index"] for item in items] == [5, 0, 3, 1, 4]
+    assert [item["stem"] for item in items] == ["题目6", "题目1", "题目4", "题目2", "题目5"]
+    assert items[0]["analysis"] == "解析6"
+    assert items[0]["images"] == [{"id": "image-6"}]
+    assert items[0]["options"] == ["错误6-1", "正确6"]
 
 
 def test_fill_component_practice_event_is_consumed_once(monkeypatch):
@@ -284,3 +327,13 @@ def test_step_indicator_is_not_clickable():
     assert "flow-step active" in html
     assert "<button" not in html
     assert "<a " not in html
+
+
+def test_four_step_indicator_can_shrink_on_mobile():
+    assert "flex: 1 1 0;" in app.APP_CSS
+    assert "min-width: 0;" in app.APP_CSS
+
+
+def test_completed_practice_actions_stay_side_by_side_on_mobile():
+    assert '[class*="st-key-practice_restart_"]' in app.APP_CSS
+    assert "flex-direction: row !important;" in app.APP_CSS
