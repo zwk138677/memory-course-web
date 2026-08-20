@@ -36,6 +36,185 @@ def test_distractor_parser_preserves_case_distinct_units():
     assert _split_distractor_text(["DB; db; dB"]) == ["DB", "db", "dB"]
 
 
+def test_parse_word_superscript_digits_as_unicode():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:r><w:t>4.2×10</w:t></w:r>
+          <w:r>
+            <w:rPr><w:vertAlign w:val="superscript" /></w:rPr>
+            <w:t>3</w:t>
+          </w:r>
+          <w:r><w:t xml:space="preserve"> J/(kg·℃)</w:t></w:r>
+        </w:p>
+        """
+    )
+
+    parsed = _paragraph_from_xml(paragraph, {})
+
+    assert parsed.text == "4.2×10³ J/(kg·℃)"
+
+
+def test_parse_word_text_subscript_as_latex():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:r><w:t>ρ</w:t></w:r>
+          <w:r>
+            <w:rPr><w:vertAlign w:val="subscript" /></w:rPr>
+            <w:t>水</w:t>
+          </w:r>
+        </w:p>
+        """
+    )
+
+    parsed = _paragraph_from_xml(paragraph, {})
+
+    assert parsed.text == r"ρ${}_{\text{水}}$"
+
+
+def test_parse_native_word_fraction_inline_in_paragraph():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+          <w:r><w:t>密度公式 ρ=</w:t></w:r>
+          <m:oMath>
+            <m:f>
+              <m:num><m:r><m:t>m</m:t></m:r></m:num>
+              <m:den><m:r><m:t>V</m:t></m:r></m:den>
+            </m:f>
+          </m:oMath>
+          <w:r><w:t>。</w:t></w:r>
+        </w:p>
+        """
+    )
+
+    parsed = _paragraph_from_xml(paragraph, {})
+
+    assert parsed.text == r"密度公式 ρ=$\frac{m}{V}$。"
+
+
+def test_parse_native_word_fraction_with_subscripts():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+          <m:oMath>
+            <m:f>
+              <m:num>
+                <m:sSub><m:e><m:r><m:t>m</m:t></m:r></m:e><m:sub><m:r><m:t>2</m:t></m:r></m:sub></m:sSub>
+                <m:r><m:t>-</m:t></m:r>
+                <m:sSub><m:e><m:r><m:t>m</m:t></m:r></m:e><m:sub><m:r><m:t>0</m:t></m:r></m:sub></m:sSub>
+              </m:num>
+              <m:den>
+                <m:sSub><m:e><m:r><m:t>m</m:t></m:r></m:e><m:sub><m:r><m:t>1</m:t></m:r></m:sub></m:sSub>
+                <m:r><m:t>-</m:t></m:r>
+                <m:sSub><m:e><m:r><m:t>m</m:t></m:r></m:e><m:sub><m:r><m:t>0</m:t></m:r></m:sub></m:sSub>
+              </m:den>
+            </m:f>
+            <m:sSub><m:e><m:r><m:t>ρ</m:t></m:r></m:e><m:sub><m:r><m:t>水</m:t></m:r></m:sub></m:sSub>
+          </m:oMath>
+        </w:p>
+        """
+    )
+
+    parsed = _paragraph_from_xml(paragraph, {})
+
+    assert parsed.text == r"$\frac{m_{2}-m_{0}}{m_{1}-m_{0}}ρ_{\text{水}}$"
+
+
+def test_parse_underlined_native_word_formula_as_one_blank():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+          <w:r><w:t>密度公式：</w:t></w:r>
+          <m:oMath>
+            <m:f>
+              <m:fPr><m:ctrlPr><w:rPr><w:u w:val="single" /></w:rPr></m:ctrlPr></m:fPr>
+              <m:num><m:r><w:rPr><w:u w:val="single" /></w:rPr><m:t>m</m:t></m:r></m:num>
+              <m:den><m:r><w:rPr><w:u w:val="single" /></w:rPr><m:t>V</m:t></m:r></m:den>
+            </m:f>
+          </m:oMath>
+          <w:r><w:t>。</w:t></w:r>
+        </w:p>
+        """
+    )
+
+    parsed = _paragraph_from_xml(paragraph, {})
+
+    assert parsed.text == r"密度公式：$\frac{m}{V}$。"
+    assert [(span.start, span.end, span.text) for span in parsed.underline_spans] == [
+        (5, 18, r"$\frac{m}{V}$")
+    ]
+
+
+def test_parse_common_native_word_formula_structures():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+          <m:oMath>
+            <m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup>
+            <m:r><m:t>+</m:t></m:r>
+            <m:rad><m:deg><m:r><m:t>3</m:t></m:r></m:deg><m:e><m:r><m:t>x</m:t></m:r></m:e></m:rad>
+            <m:r><m:t>+</m:t></m:r>
+            <m:d>
+              <m:dPr><m:begChr m:val="[" /><m:endChr m:val="]" /></m:dPr>
+              <m:e><m:r><m:t>y+1</m:t></m:r></m:e>
+            </m:d>
+          </m:oMath>
+        </w:p>
+        """
+    )
+
+    parsed = _paragraph_from_xml(paragraph, {})
+
+    assert parsed.text == r"$x^{2}+\sqrt[3]{x}+\left[y+1\right]$"
+
+
+def test_parse_native_word_combined_subscript_and_superscript():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+          <m:oMath>
+            <m:sSubSup>
+              <m:e><m:r><m:t>A</m:t></m:r></m:e>
+              <m:sub><m:r><m:t>1</m:t></m:r></m:sub>
+              <m:sup><m:r><m:t>2</m:t></m:r></m:sup>
+            </m:sSubSup>
+          </m:oMath>
+        </w:p>
+        """
+    )
+
+    parsed = _paragraph_from_xml(paragraph, {})
+
+    assert parsed.text == r"$A_{1}^{2}$"
+
+
+def test_parse_unsupported_native_word_formula_with_visible_placeholder():
+    paragraph = ET.fromstring(
+        """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+          <m:oMath>
+            <m:m>
+              <m:mr><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:mr>
+              <m:mr><m:e><m:r><m:t>c</m:t></m:r></m:e><m:e><m:r><m:t>d</m:t></m:r></m:e></m:mr>
+            </m:m>
+          </m:oMath>
+        </w:p>
+        """
+    )
+
+    parsed = _paragraph_from_xml(paragraph, {})
+
+    assert parsed.text == r"$\text{[暂不支持的 Word 公式]}$"
+
+
 def test_distractor_parser_keeps_image_only_paragraph_after_distractors():
     image = ParagraphImage(
         id="rId1",

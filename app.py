@@ -17,9 +17,8 @@ from src.memory_course_web.validation import validate_finished_course_payload
 
 st.set_page_config(page_title="成品背记资料学习页", layout="wide")
 
-PARSER_SCHEMA_VERSION = "2026-08-13-multi-course-v1"
+PARSER_SCHEMA_VERSION = "2026-08-20-omml-v1"
 UPLOAD_NONCE_KEY = "course_upload_nonce"
-MATH_CATEGORY_LABELS = {"基础辨析", "易错辨析", "简单应用"}
 PRACTICE_SAMPLE_SIZE = 5
 COURSE_STAGE_SHOW = "show"
 COURSE_STAGE_FILL = "fill"
@@ -532,14 +531,7 @@ def _is_physics_payload(payload: dict[str, Any]) -> bool:
 
 
 def _payload_needs_reparse(payload: Any) -> bool:
-    if not _has_current_parser_schema(payload):
-        return True
-    if not isinstance(payload, dict) or not _is_physics_payload(payload):
-        return False
-    questions = [question for question in payload.get("quick_practice", []) if isinstance(question, dict)]
-    if any(str(question.get("category", "")).strip() in MATH_CATEGORY_LABELS for question in questions):
-        return True
-    return bool(questions) and any(not str(question.get("analysis", "")).strip() for question in questions)
+    return not _has_current_parser_schema(payload)
 
 
 def _collection_needs_reparse(payload: Any) -> bool:

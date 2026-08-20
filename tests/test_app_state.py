@@ -10,10 +10,12 @@ def test_parser_schema_helpers_tag_and_reject_old_payload():
     assert app._has_current_parser_schema(tagged)
     assert not app._has_current_parser_schema(payload)
     assert not app._has_current_parser_schema(None)
+    assert not app._has_current_parser_schema({**tagged, "_parser_schema_version": "2026-08-13-multi-course-v1"})
+    assert not app._has_current_parser_schema({**tagged, "_parser_schema_version": "2026-08-20-superscript-v1"})
 
 
-def test_physics_payload_with_math_categories_or_missing_analysis_needs_reparse():
-    old_physics_payload = {
+def test_current_physics_payload_does_not_reparse_for_optional_question_metadata():
+    current_physics_payload = {
         "_parser_schema_version": app.PARSER_SCHEMA_VERSION,
         "title": "分子动理论",
         "structure": "physics_reference_course",
@@ -30,19 +32,10 @@ def test_physics_payload_with_math_categories_or_missing_analysis_needs_reparse(
         ],
     }
 
-    assert app._payload_needs_reparse(old_physics_payload)
-
-    refreshed = {
-        **old_physics_payload,
-        "quick_practice": [
-            {
-                **old_physics_payload["quick_practice"][0],
-                "category": "",
-                "analysis": "物质由分子、原子等微粒构成。",
-            }
-        ],
-    }
-    assert not app._payload_needs_reparse(refreshed)
+    assert not app._payload_needs_reparse(current_physics_payload)
+    assert app._payload_needs_reparse(
+        {**current_physics_payload, "_parser_schema_version": "2026-08-20-superscript-v1"}
+    )
 
 
 def test_reset_course_state_can_clear_upload_signature(monkeypatch):

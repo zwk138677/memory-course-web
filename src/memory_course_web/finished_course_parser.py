@@ -16,6 +16,7 @@ from zipfile import ZipFile
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -40,6 +41,10 @@ BROWSER_IMAGE_MIME_TYPES = {
 
 def q_w(name: str) -> str:
     return f"{{{W_NS}}}{name}"
+
+
+def q_m(name: str) -> str:
+    return f"{{{M_NS}}}{name}"
 
 
 def q_r(name: str) -> str:
@@ -81,6 +86,27 @@ LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*(?:[、]\s*|[.．](?!\d)\s*)")
 DISTRACTOR_RE = re.compile(r"^\s*干扰项\s*[：:]\s*(.*)$")
 DISTRACTOR_SPLIT_RE = re.compile(r"[；;]")
 COURSE_SEPARATOR = "=" * 40
+UNSUPPORTED_OMML_LATEX = r"\text{[暂不支持的 Word 公式]}"
+TRANSPARENT_OMML_ELEMENTS = {"oMath", "oMathPara", "r", "num", "den", "e", "sub", "sup", "deg"}
+SUPERSCRIPT_TRANSLATION = str.maketrans(
+    {
+        "0": "\u2070",
+        "1": "\u00b9",
+        "2": "\u00b2",
+        "3": "\u00b3",
+        "4": "\u2074",
+        "5": "\u2075",
+        "6": "\u2076",
+        "7": "\u2077",
+        "8": "\u2078",
+        "9": "\u2079",
+        "+": "\u207a",
+        "-": "\u207b",
+        "=": "\u207c",
+        "(": "\u207d",
+        ")": "\u207e",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -163,7 +189,93 @@ def _text_from_run(run: ET.Element) -> str:
             parts.append("\t")
         elif node.tag == q_w("br"):
             parts.append("\n")
-    return "".join(parts)
+    text = "".join(parts)
+    rpr = run.find(q_w("rPr"))
+    vertical_alignment = rpr.find(q_w("vertAlign")) if rpr is not None else None
+    alignment_value = vertical_alignment.attrib.get(q_w("val")) if vertical_alignment is not None else ""
+    if alignment_value == "superscript":
+        return text.translate(SUPERSCRIPT_TRANSLATION)
+    if alignment_value == "subscript":
+        return "${}_{" + _latex_script_text(text) + "}$"
+    return text
+
+
+def _latex_script_text(text: str) -> str:
+    if any("\u4e00" <= char <= "\u9fff" for char in text):
+        return rf"\text{{{text}}}"
+    return text
+
+
+def _omml_to_latex(element: ET.Element) -> str:
+    if element.tag == q_m("t"):
+        return element.text or ""
+    if element.tag == q_m("sSub"):
+        base = element.find(q_m("e"))
+        subscript = element.find(q_m("sub"))
+        base_text = _omml_to_latex(base) if base is not None else ""
+        subscript_text = _omml_to_latex(subscript) if subscript is not None else ""
+        subscript_text = _latex_script_text(subscript_text)
+        return f"{base_text}_{{{subscript_text}}}"
+    if element.tag == q_m("sSup"):
+        base = element.find(q_m("e"))
+        superscript = element.find(q_m("sup"))
+        base_text = _omml_to_latex(base) if base is not None else ""
+        superscript_text = _omml_to_latex(superscript) if superscript is not None else ""
+        return f"{base_text}^{{{superscript_text}}}"
+    if element.tag == q_m("sSubSup"):
+        base = element.find(q_m("e"))
+        subscript = element.find(q_m("sub"))
+        superscript = element.find(q_m("sup"))
+        base_text = _omml_to_latex(base) if base is not None else ""
+        subscript_text = _latex_script_text(_omml_to_latex(subscript)) if subscript is not None else ""
+        superscript_text = _omml_to_latex(superscript) if superscript is not None else ""
+        return f"{base_text}_{{{subscript_text}}}^{{{superscript_text}}}"
+    if element.tag == q_m("f"):
+        numerator = element.find(q_m("num"))
+        denominator = element.find(q_m("den"))
+        numerator_text = _omml_to_latex(numerator) if numerator is not None else ""
+        denominator_text = _omml_to_latex(denominator) if denominator is not None else ""
+        return rf"\frac{{{numerator_text}}}{{{denominator_text}}}"
+    if element.tag == q_m("rad"):
+        degree = element.find(q_m("deg"))
+        radicand = element.find(q_m("e"))
+        degree_text = _omml_to_latex(degree) if degree is not None else ""
+        radicand_text = _omml_to_latex(radicand) if radicand is not None else ""
+        if degree_text:
+            return rf"\sqrt[{degree_text}]{{{radicand_text}}}"
+        return rf"\sqrt{{{radicand_text}}}"
+    if element.tag == q_m("d"):
+        properties = element.find(q_m("dPr"))
+        begin = "("
+        end = ")"
+        separator = ","
+        if properties is not None:
+            begin_node = properties.find(q_m("begChr"))
+            end_node = properties.find(q_m("endChr"))
+            separator_node = properties.find(q_m("sepChr"))
+            if begin_node is not None:
+                begin = begin_node.attrib.get(q_m("val"), begin)
+            if end_node is not None:
+                end = end_node.attrib.get(q_m("val"), end)
+            if separator_node is not None:
+                separator = separator_node.attrib.get(q_m("val"), separator)
+        expressions = [_omml_to_latex(expression) for expression in element.findall(q_m("e"))]
+        return rf"\left{begin}{separator.join(expressions)}\right{end}"
+    if element.tag.startswith(f"{{{M_NS}}}"):
+        local_name = element.tag.rsplit("}", 1)[-1]
+        if local_name.endswith("Pr"):
+            return ""
+        if local_name not in TRANSPARENT_OMML_ELEMENTS:
+            return UNSUPPORTED_OMML_LATEX
+    return "".join(_omml_to_latex(child) for child in element)
+
+
+def _paragraph_inline_nodes(paragraph: ET.Element):
+    for child in paragraph:
+        if child.tag in {q_w("r"), q_m("oMath")}:
+            yield child
+            continue
+        yield from _paragraph_inline_nodes(child)
 
 
 def _is_underlined(run: ET.Element) -> bool:
@@ -175,6 +287,13 @@ def _is_underlined(run: ET.Element) -> bool:
         return False
     value = underline.attrib.get(q_w("val"), "single")
     return value not in {"none", "0", "false"}
+
+
+def _is_omml_underlined(formula: ET.Element) -> bool:
+    return any(
+        underline.attrib.get(q_w("val"), "single") not in {"none", "0", "false"}
+        for underline in formula.iter(q_w("u"))
+    )
 
 
 def _mime_type_for_name(name: str) -> str:
@@ -611,20 +730,25 @@ def _paragraph_from_xml(
     images: list[ParagraphImage] = []
     cursor = 0
     ole_formula_lookup = ole_formula_lookup or {}
-    runs = list(paragraph.iter(q_w("r")))
-    run_texts = [_text_from_run(run) for run in runs]
+    inline_nodes = list(_paragraph_inline_nodes(paragraph))
+    node_texts = [
+        _text_from_run(node) if node.tag == q_w("r") else f"${_omml_to_latex(node)}$"
+        for node in inline_nodes
+    ]
 
-    for run_index, run in enumerate(runs):
+    for node_index, node in enumerate(inline_nodes):
         prefix_text = "".join(text_parts)
-        suffix_text = "".join(run_texts[run_index + 1 :])
-        images.extend(_images_from_run(run, media_lookup, ole_formula_lookup, cursor, prefix_text, suffix_text))
-        run_text = run_texts[run_index]
-        if not run_text:
+        suffix_text = "".join(node_texts[node_index + 1 :])
+        if node.tag == q_w("r"):
+            images.extend(_images_from_run(node, media_lookup, ole_formula_lookup, cursor, prefix_text, suffix_text))
+        node_text = node_texts[node_index]
+        if not node_text:
             continue
         start = cursor
-        cursor += len(run_text)
-        text_parts.append(run_text)
-        if _is_underlined(run):
+        cursor += len(node_text)
+        text_parts.append(node_text)
+        is_underlined = _is_underlined(node) if node.tag == q_w("r") else _is_omml_underlined(node)
+        if is_underlined:
             if raw_spans and raw_spans[-1][1] == start:
                 raw_spans[-1] = (raw_spans[-1][0], cursor)
             else:

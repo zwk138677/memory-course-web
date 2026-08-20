@@ -6,7 +6,7 @@ from src.memory_course_web.rendering import course_id
 
 
 APP_PATH = Path(__file__).parents[1] / "app.py"
-PARSER_SCHEMA_VERSION = "2026-08-13-multi-course-v1"
+PARSER_SCHEMA_VERSION = "2026-08-20-omml-v1"
 
 
 def _course(title: str) -> dict:
